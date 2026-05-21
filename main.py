@@ -1,11 +1,10 @@
 import os
 import requests
 import time
-import threading
 from datetime import datetime, timezone
 
 # =========================
-# ENV CHECK
+# ENV VARIABLES
 # =========================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -24,12 +23,12 @@ BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 PAIRS = ["EUR/USD", "GBP/USD", "USD/CAD", "USD/JPY", "AUD/USD"]
 
 # =========================
-# TELEGRAM CORE
+# TELEGRAM
 # =========================
 
 def send_message(chat_id, text):
     try:
-        r = requests.post(
+        requests.post(
             f"{BASE_URL}/sendMessage",
             json={
                 "chat_id": chat_id,
@@ -38,7 +37,6 @@ def send_message(chat_id, text):
             },
             timeout=10
         )
-        return r.json()
     except Exception as e:
         print("SEND ERROR:", e)
 
@@ -47,10 +45,7 @@ def get_updates(offset=None):
     try:
         r = requests.get(
             f"{BASE_URL}/getUpdates",
-            params={
-                "timeout": 20,
-                "offset": offset
-            },
+            params={"timeout": 20, "offset": offset},
             timeout=25
         )
         return r.json()
@@ -63,14 +58,14 @@ def get_updates(offset=None):
 # MARKET DATA
 # =========================
 
-def get_data(pair, interval="1h", size=100):
+def get_data(pair):
     try:
         r = requests.get(
             "https://api.twelvedata.com/time_series",
             params={
                 "symbol": pair,
-                "interval": interval,
-                "outputsize": size,
+                "interval": "1h",
+                "outputsize": 100,
                 "apikey": TWELVE_DATA_KEY
             },
             timeout=15
@@ -81,8 +76,7 @@ def get_data(pair, interval="1h", size=100):
         if "values" not in data:
             return None
 
-        # reverse so oldest -> newest
-        return list(reversed(data["values"]))
+        return list(reversed(data["values"]))  # oldest → newest
 
     except Exception as e:
         print("DATA ERROR:", e)
@@ -93,21 +87,21 @@ def get_data(pair, interval="1h", size=100):
 # INDICATORS
 # =========================
 
-def sma(data, period):
-    if len(data) < period:
+def sma(values, period):
+    if len(values) < period:
         return None
-    return sum(data[-period:]) / period
+    return sum(values[-period:]) / period
 
 
-def ema(data, period):
-    if len(data) < period:
+def ema(values, period):
+    if len(values) < period:
         return None
 
     k = 2 / (period + 1)
-    ema_val = sum(data[:period]) / period
+    ema_val = sum(values[:period]) / period
 
-    for price in data[period:]:
-        ema_val = price * k + ema_val * (1 - k)
+    for v in values[period:]:
+        ema_val = v * k + ema_val * (1 - k)
 
     return ema_val
 
@@ -133,16 +127,16 @@ def rsi(closes, period=14):
     return round(100 - (100 / (1 + rs)), 2)
 
 
-def atr(values, period=14):
-    if len(values) < period + 1:
+def atr(data, period=14):
+    if len(data) < period + 1:
         return 0.001
 
     trs = []
 
     for i in range(-period, 0):
-        high = float(values[i]["high"])
-        low = float(values[i]["low"])
-        prev_close = float(values[i - 1]["close"])
+        high = float(data[i]["high"])
+        low = float(data[i]["low"])
+        prev_close = float(data[i - 1]["close"])
 
         tr = max(
             high - low,
@@ -156,18 +150,14 @@ def atr(values, period=14):
 
 
 # =========================
-# GEMINI (EXPLANATION ONLY)
+# GEMINI (TEXT ONLY)
 # =========================
 
 def ask_gemini(prompt):
     try:
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
-            json={
-                "contents": [
-                    {"parts": [{"text": prompt}]}
-                ]
-            },
+            json={"contents": [{"parts": [{"text": prompt}]}]},
             timeout=20
         )
 
@@ -176,7 +166,7 @@ def ask_gemini(prompt):
 
     except Exception as e:
         print("GEMINI ERROR:", e)
-        return "Analysis unavailable."
+        return "AI analysis unavailable."
 
 
 # =========================
@@ -192,8 +182,7 @@ def analyze(pair):
 
     closes = [float(x["close"]) for x in data]
 
-    latest = data[-1]
-    price = float(latest["close"])
+    price = closes[-1]
 
     sma5 = sma(closes, 5)
     sma20 = sma(closes, 20)
@@ -206,14 +195,14 @@ def analyze(pair):
 
     direction = None
 
-    # ================= BUY =================
+    # BUY
     if sma5 > sma20 and price > ema10 and 50 < rsi_val < 70:
         direction = "BUY"
         entry = price
         sl = entry - (atr_val * 1.5)
         tp = entry + (atr_val * 3)
 
-    # ================= SELL =================
+    # SELL
     elif sma5 < sma20 and price < ema10 and 30 < rsi_val < 50:
         direction = "SELL"
         entry = price
@@ -221,17 +210,18 @@ def analyze(pair):
         tp = entry - (atr_val * 3)
 
     else:
-        return f"📊 {pair}\n\n⚠️ No clean setup."
+        return f"📊 {pair}\n\n⚠️ No valid setup"
 
     risk = abs(entry - sl)
     reward = abs(tp - entry)
-    rr = reward / risk if risk != 0 else 0
+
+    rr = reward / risk if risk else 0
 
     if rr < 1.5:
         return f"📊 {pair}\n\n⚠️ Weak RR ({rr:.2f})"
 
     prompt = f"""
-Forex analysis only. Do not invent numbers.
+Forex signal only.
 
 Pair: {pair}
 Direction: {direction}
@@ -241,7 +231,7 @@ SL: {sl}
 RSI: {rsi_val}
 ATR: {atr_val}
 
-Return clean signal:
+Format:
 Direction:
 Entry:
 TP:
@@ -268,26 +258,28 @@ def handle(chat_id, text):
     text = text.strip().lower()
 
     if text == "/start":
-        send_message(
-            chat_id,
+        send_message(chat_id,
             "📊 Forex Bot Ready\n\n"
             "/signal - all pairs\n"
-            "/analyze eurusd"
+            "/analyze eurusd\n"
+            "/pairs"
         )
 
     elif text == "/pairs":
         send_message(chat_id, "\n".join(PAIRS))
 
     elif text == "/signal":
-        send_message(chat_id, "Analyzing...")
+        send_message(chat_id, "Analyzing market...")
+
         for p in PAIRS:
             send_message(chat_id, analyze(p))
             time.sleep(2)
 
     elif text.startswith("/analyze"):
         parts = text.split()
+
         if len(parts) < 2:
-            send_message(chat_id, "Use /analyze eurusd")
+            send_message(chat_id, "Usage: /analyze eurusd")
             return
 
         raw = parts[1].upper()
@@ -297,18 +289,21 @@ def handle(chat_id, text):
 
 
 # =========================
-# MAIN LOOP
+# MAIN LOOP (IMPORTANT FIXED PART)
 # =========================
 
 def main():
-    print("Bot running...")
+
+    print("BOT STARTED SUCCESSFULLY")
 
     offset = None
 
     while True:
+
         updates = get_updates(offset)
 
         if updates.get("ok"):
+
             for u in updates.get("result", []):
 
                 offset = u["update_id"] + 1
@@ -316,7 +311,12 @@ def main():
                 msg = u.get("message", {})
 
                 if "text" in msg:
-                    handle(msg["chat"]["id"], msg["text"])
+                    chat_id = msg["chat"]["id"]
+                    text = msg["text"]
+
+                    print("MSG:", text)
+
+                    handle(chat_id, text)
 
         time.sleep(2)
 
