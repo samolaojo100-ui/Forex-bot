@@ -2,35 +2,34 @@ import os
 import requests
 import time
 import threading
-import statistics
 from datetime import datetime, timezone
 
 # =========================
-# CONFIG
+# ENV CHECK
 # =========================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
-CHAT_ID = os.getenv("CHAT_ID")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("Missing TELEGRAM_TOKEN")
+if not TWELVE_DATA_KEY:
+    raise ValueError("Missing TWELVE_DATA_KEY")
+if not GEMINI_KEY:
+    raise ValueError("Missing GEMINI_KEY")
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-PAIRS = [
-    "EUR/USD",
-    "GBP/USD",
-    "USD/CAD",
-    "USD/JPY",
-    "AUD/USD"
-]
+PAIRS = ["EUR/USD", "GBP/USD", "USD/CAD", "USD/JPY", "AUD/USD"]
 
 # =========================
-# TELEGRAM
+# TELEGRAM CORE
 # =========================
 
 def send_message(chat_id, text):
     try:
-        requests.post(
+        r = requests.post(
             f"{BASE_URL}/sendMessage",
             json={
                 "chat_id": chat_id,
@@ -39,22 +38,24 @@ def send_message(chat_id, text):
             },
             timeout=10
         )
-    except:
-        print("Telegram send failed")
+        return r.json()
+    except Exception as e:
+        print("SEND ERROR:", e)
 
 
 def get_updates(offset=None):
     try:
-        response = requests.get(
+        r = requests.get(
             f"{BASE_URL}/getUpdates",
             params={
-                "timeout": 30,
+                "timeout": 20,
                 "offset": offset
             },
-            timeout=35
+            timeout=25
         )
-        return response.json()
-    except:
+        return r.json()
+    except Exception as e:
+        print("GETUPDATES ERROR:", e)
         return {"ok": False}
 
 
@@ -62,27 +63,29 @@ def get_updates(offset=None):
 # MARKET DATA
 # =========================
 
-def get_data(pair, interval="1h", outputsize=100):
+def get_data(pair, interval="1h", size=100):
     try:
-        response = requests.get(
+        r = requests.get(
             "https://api.twelvedata.com/time_series",
             params={
                 "symbol": pair,
                 "interval": interval,
-                "outputsize": outputsize,
+                "outputsize": size,
                 "apikey": TWELVE_DATA_KEY
             },
             timeout=15
         )
 
-        data = response.json()
+        data = r.json()
 
         if "values" not in data:
             return None
 
-        return data["values"]
+        # reverse so oldest -> newest
+        return list(reversed(data["values"]))
 
-    except:
+    except Exception as e:
+        print("DATA ERROR:", e)
         return None
 
 
@@ -91,47 +94,55 @@ def get_data(pair, interval="1h", outputsize=100):
 # =========================
 
 def sma(data, period):
-    return sum(data[:period]) / period
+    if len(data) < period:
+        return None
+    return sum(data[-period:]) / period
 
 
-def ema(prices, period):
-    multiplier = 2 / (period + 1)
-    ema_value = sum(prices[:period]) / period
+def ema(data, period):
+    if len(data) < period:
+        return None
 
-    for price in prices[period:]:
-        ema_value = (price - ema_value) * multiplier + ema_value
+    k = 2 / (period + 1)
+    ema_val = sum(data[:period]) / period
 
-    return ema_value
+    for price in data[period:]:
+        ema_val = price * k + ema_val * (1 - k)
+
+    return ema_val
 
 
-def calculate_rsi(closes, period=14):
-    gains = []
-    losses = []
+def rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return 50
 
-    for i in range(period):
-        diff = closes[i] - closes[i + 1]
+    gains = 0
+    losses = 0
 
+    for i in range(-period, 0):
+        diff = closes[i] - closes[i - 1]
         if diff > 0:
-            gains.append(diff)
+            gains += diff
         else:
-            losses.append(abs(diff))
+            losses += abs(diff)
 
-    avg_gain = sum(gains) / period if gains else 0.0001
-    avg_loss = sum(losses) / period if losses else 0.0001
+    if losses == 0:
+        return 100
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-
-    return round(rsi, 2)
+    rs = gains / losses
+    return round(100 - (100 / (1 + rs)), 2)
 
 
-def calculate_atr(values, period=14):
+def atr(values, period=14):
+    if len(values) < period + 1:
+        return 0.001
+
     trs = []
 
-    for i in range(period):
+    for i in range(-period, 0):
         high = float(values[i]["high"])
         low = float(values[i]["low"])
-        prev_close = float(values[i + 1]["close"])
+        prev_close = float(values[i - 1]["close"])
 
         tr = max(
             high - low,
@@ -141,228 +152,111 @@ def calculate_atr(values, period=14):
 
         trs.append(tr)
 
-    return round(sum(trs) / period, 5)
+    return sum(trs) / period
+
+
+# =========================
+# GEMINI (EXPLANATION ONLY)
+# =========================
+
+def ask_gemini(prompt):
+    try:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
+            json={
+                "contents": [
+                    {"parts": [{"text": prompt}]}
+                ]
+            },
+            timeout=20
+        )
+
+        data = r.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    except Exception as e:
+        print("GEMINI ERROR:", e)
+        return "Analysis unavailable."
 
 
 # =========================
 # SIGNAL ENGINE
 # =========================
 
-def build_signal(pair):
+def analyze(pair):
 
-    daily_data = get_data(pair, "1day", 50)
-    h4_data = get_data(pair, "4h", 50)
-    h1_data = get_data(pair, "1h", 50)
+    data = get_data(pair)
 
-    if not daily_data or not h4_data or not h1_data:
-        return "❌ Failed to fetch market data."
+    if not data:
+        return f"❌ No data for {pair}"
 
-    closes = [float(v["close"]) for v in h4_data]
+    closes = [float(x["close"]) for x in data]
 
-    latest = h4_data[0]
-    latest_close = float(latest["close"])
+    latest = data[-1]
+    price = float(latest["close"])
 
-    sma5 = round(sma(closes, 5), 5)
-    sma20 = round(sma(closes, 20), 5)
+    sma5 = sma(closes, 5)
+    sma20 = sma(closes, 20)
+    ema10 = ema(closes, 10)
+    rsi_val = rsi(closes)
+    atr_val = atr(data)
 
-    ema10 = round(ema(closes[::-1], 10), 5)
-
-    rsi = calculate_rsi(closes)
-
-    atr = calculate_atr(h4_data)
-
-    previous_high = float(h4_data[1]["high"])
-    previous_low = float(h4_data[1]["low"])
+    if not sma5 or not sma20 or not ema10:
+        return "❌ Not enough data"
 
     direction = None
-    confidence = 0
 
-    # =========================
-    # BUY CONDITIONS
-    # =========================
-
-    if (
-        sma5 > sma20 and
-        latest_close > ema10 and
-        50 < rsi < 70 and
-        latest_close > previous_high
-    ):
-
+    # ================= BUY =================
+    if sma5 > sma20 and price > ema10 and 50 < rsi_val < 70:
         direction = "BUY"
+        entry = price
+        sl = entry - (atr_val * 1.5)
+        tp = entry + (atr_val * 3)
 
-        entry = latest_close
-
-        stop_loss = round(entry - (atr * 1.5), 5)
-
-        take_profit = round(entry + (atr * 3), 5)
-
-        risk = entry - stop_loss
-        reward = take_profit - entry
-
-        rr = round(reward / risk, 2)
-
-        confidence = min(
-            85,
-            round(
-                60 +
-                ((sma5 - sma20) * 10000 / 4) +
-                ((70 - rsi) / 3)
-            )
-        )
-
-    # =========================
-    # SELL CONDITIONS
-    # =========================
-
-    elif (
-        sma5 < sma20 and
-        latest_close < ema10 and
-        30 < rsi < 50 and
-        latest_close < previous_low
-    ):
-
+    # ================= SELL =================
+    elif sma5 < sma20 and price < ema10 and 30 < rsi_val < 50:
         direction = "SELL"
-
-        entry = latest_close
-
-        stop_loss = round(entry + (atr * 1.5), 5)
-
-        take_profit = round(entry - (atr * 3), 5)
-
-        risk = stop_loss - entry
-        reward = entry - take_profit
-
-        rr = round(reward / risk, 2)
-
-        confidence = min(
-            85,
-            round(
-                60 +
-                ((sma20 - sma5) * 10000 / 4) +
-                ((rsi - 30) / 3)
-            )
-        )
+        entry = price
+        sl = entry + (atr_val * 1.5)
+        tp = entry - (atr_val * 3)
 
     else:
-        return (
-            f"📊 *{pair}*\n\n"
-            f"⚠️ No high-quality setup right now.\n"
-            f"Market conditions are unclear."
-        )
+        return f"📊 {pair}\n\n⚠️ No clean setup."
 
-    # =========================
-    # RISK FILTER
-    # =========================
+    risk = abs(entry - sl)
+    reward = abs(tp - entry)
+    rr = reward / risk if risk != 0 else 0
 
     if rr < 1.5:
-        return (
-            f"📊 *{pair}*\n\n"
-            f"⚠️ Trade rejected.\n"
-            f"Risk-to-reward too weak ({rr}:1)."
-        )
-
-    # =========================
-    # AI EXPLANATION
-    # =========================
-
-    explanation = ask_gemini(
-        pair,
-        direction,
-        entry,
-        take_profit,
-        stop_loss,
-        confidence,
-        sma5,
-        sma20,
-        rsi,
-        atr
-    )
-
-    return (
-        f"📊 *{pair}*\n\n"
-        f"{explanation}\n\n"
-        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-    )
-
-
-# =========================
-# GEMINI EXPLANATION ONLY
-# =========================
-
-def ask_gemini(
-    pair,
-    direction,
-    entry,
-    tp,
-    sl,
-    confidence,
-    sma5,
-    sma20,
-    rsi,
-    atr
-):
+        return f"📊 {pair}\n\n⚠️ Weak RR ({rr:.2f})"
 
     prompt = f"""
-You are a professional forex analyst.
-
-DO NOT invent prices.
-
-Use the exact data below.
+Forex analysis only. Do not invent numbers.
 
 Pair: {pair}
 Direction: {direction}
 Entry: {entry}
-Take Profit: {tp}
-Stop Loss: {sl}
-Confidence: {confidence}%
-SMA5: {sma5}
-SMA20: {sma20}
-RSI: {rsi}
-ATR: {atr}
+TP: {tp}
+SL: {sl}
+RSI: {rsi_val}
+ATR: {atr_val}
 
-Create a SHORT clean Telegram signal.
-
-Format:
-
+Return clean signal:
 Direction:
-Timeframe:
-Entry Zone:
-Take Profit:
-Stop Loss:
+Entry:
+TP:
+SL:
 Confidence:
-Reason:
-
-Maximum 2 short sentences for reason.
+Reason (max 2 lines)
 """
 
-    try:
+    ai = ask_gemini(prompt)
 
-        response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
-            json={
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": prompt}
-                        ]
-                    }
-                ]
-            },
-            timeout=20
-        )
-
-        data = response.json()
-
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-
-    except:
-        return (
-            f"🔵 Direction: {direction}\n"
-            f"🎯 Entry: {entry}\n"
-            f"✅ TP: {tp}\n"
-            f"🛑 SL: {sl}\n"
-            f"📊 Confidence: {confidence}%"
-        )
+    return (
+        f"📊 *{pair}*\n\n"
+        f"{ai}\n\n"
+        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
 
 
 # =========================
@@ -371,94 +265,35 @@ Maximum 2 short sentences for reason.
 
 def handle(chat_id, text):
 
-    text = text.strip()
+    text = text.strip().lower()
 
     if text == "/start":
-
         send_message(
             chat_id,
-            "👋 *Advanced Forex Signal Bot*\n\n"
-            "Commands:\n"
-            "• /signal — analyze all pairs\n"
-            "• /analyze EURUSD — analyze one pair\n"
-            "• /pairs — list pairs"
+            "📊 Forex Bot Ready\n\n"
+            "/signal - all pairs\n"
+            "/analyze eurusd"
         )
 
     elif text == "/pairs":
-
-        send_message(
-            chat_id,
-            "📈 *Available Pairs*\n\n" +
-            "\n".join([f"• {p}" for p in PAIRS])
-        )
+        send_message(chat_id, "\n".join(PAIRS))
 
     elif text == "/signal":
-
-        send_message(chat_id, "⏳ Scanning market...")
-
-        for pair in PAIRS:
-
-            result = build_signal(pair)
-
-            send_message(chat_id, result)
-
-            time.sleep(3)
+        send_message(chat_id, "Analyzing...")
+        for p in PAIRS:
+            send_message(chat_id, analyze(p))
+            time.sleep(2)
 
     elif text.startswith("/analyze"):
-
         parts = text.split()
-
         if len(parts) < 2:
-
-            send_message(
-                chat_id,
-                "Usage:\n/analyze EURUSD"
-            )
-
+            send_message(chat_id, "Use /analyze eurusd")
             return
 
         raw = parts[1].upper()
+        pair = raw[:3] + "/" + raw[3:]
 
-        pair = (
-            raw[:3] + "/" + raw[3:]
-            if "/" not in raw
-            else raw
-        )
-
-        send_message(chat_id, f"⏳ Analyzing {pair}...")
-
-        result = build_signal(pair)
-
-        send_message(chat_id, result)
-
-
-# =========================
-# DAILY SIGNAL SYSTEM
-# =========================
-
-def auto_signals():
-
-    while True:
-
-        now = datetime.now(timezone.utc)
-
-        # 08:00 UTC
-        if now.hour == 8 and now.minute == 0:
-
-            for pair in PAIRS:
-
-                result = build_signal(pair)
-
-                send_message(
-                    CHAT_ID,
-                    f"🌅 *Daily Signal*\n\n{result}"
-                )
-
-                time.sleep(5)
-
-            time.sleep(60)
-
-        time.sleep(20)
+        send_message(chat_id, analyze(pair))
 
 
 # =========================
@@ -466,42 +301,24 @@ def auto_signals():
 # =========================
 
 def main():
-
-    print("Advanced forex bot running...")
-
-    threading.Thread(
-        target=auto_signals,
-        daemon=True
-    ).start()
+    print("Bot running...")
 
     offset = None
 
     while True:
+        updates = get_updates(offset)
 
-        try:
+        if updates.get("ok"):
+            for u in updates.get("result", []):
 
-            updates = get_updates(offset)
+                offset = u["update_id"] + 1
 
-            if updates.get("ok"):
+                msg = u.get("message", {})
 
-                for update in updates.get("result", []):
+                if "text" in msg:
+                    handle(msg["chat"]["id"], msg["text"])
 
-                    offset = update["update_id"] + 1
-
-                    message = update.get("message", {})
-
-                    if "text" in message:
-
-                        handle(
-                            message["chat"]["id"],
-                            message["text"]
-                        )
-
-        except:
-
-            print("Main loop error")
-
-            time.sleep(5)
+        time.sleep(2)
 
 
 if __name__ == "__main__":
