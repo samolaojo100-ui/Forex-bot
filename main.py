@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import yfinance as yf
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_KEY     = os.getenv("GEMINI_KEY")
 CHAT_ID        = os.getenv("CHAT_ID")
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
@@ -31,60 +30,79 @@ def get_updates(offset=None):
 
 def get_data(pair):
     try:
-        ticker = yf.Ticker(pair)
-        hist   = ticker.history(period="1mo", interval="1d")
+        hist = yf.Ticker(pair).history(period="1mo", interval="1d")
         if hist.empty:
-            print(f"Empty data for {pair}")
             return None
-        closes = hist["Close"].tolist()[::-1][:20]
-        return closes
+        return hist
     except Exception as e:
         print(f"Data error {pair}: {e}")
         return None
 
-def ask_gemini(prompt):
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
-        r = requests.post(url,
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=15)
-        resp = r.json()
-        print(f"Gemini status: {r.status_code}")
-        if "candidates" in resp:
-            return resp["candidates"][0]["content"]["parts"][0]["text"]
-        elif "error" in resp:
-            print(f"Gemini API error: {resp['error']}")
-            return "AI analysis unavailable right now."
-        else:
-            print(f"Unexpected Gemini response: {resp}")
-            return "AI analysis unavailable right now."
-    except Exception as e:
-        print(f"Gemini exception: {e}")
-        return "AI analysis unavailable right now."
+def calc_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return 50
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        diff = closes[-(period + 1) + i] - closes[-(period + 1) + i - 1]
+        (gains if diff > 0 else losses).append(abs(diff))
+    avg_g = sum(gains) / period if gains else 0.001
+    avg_l = sum(losses) / period if losses else 0.001
+    return round(100 - (100 / (1 + avg_g / avg_l)), 1)
 
 def analyze(pair):
-    closes = get_data(pair)
-    if not closes or len(closes) < 5:
-        return f"Could not fetch data for {pair}"
-    change = round(((closes[0] - closes[1]) / closes[1]) * 100, 4)
-    sma5   = round(sum(closes[:5]) / 5, 5)
-    sma20  = round(sum(closes[:min(20, len(closes))]) / min(20, len(closes)), 5)
-    trend  = "BULLISH" if sma5 > sma20 else "BEARISH"
-    prompt = f"""You are a professional forex trader. Analyze {pair}:
-Latest Rate: {round(closes[0], 5)}
-Daily Change: {change}%
-5-day SMA: {sma5} | 20-day SMA: {sma20} | Trend: {trend}
-Last 5 closes: {', '.join(str(round(c, 5)) for c in closes[:5])}
+    hist = get_data(pair)
+    if hist is None:
+        return f"⚠️ Could not fetch data for {pair}"
 
-Reply with a clean Telegram message:
-🔵 Direction: BUY or SELL
-⏱ Timeframe: 1H / 4H / Daily
-🎯 Entry Zone:
-✅ Take Profit:
-🛑 Stop Loss:
-📊 Confidence: (max 85%)
-💡 Reason: (2 sentences max)"""
-    return ask_gemini(prompt)
+    closes = hist["Close"].tolist()
+    highs  = hist["High"].tolist()
+    lows   = hist["Low"].tolist()
+
+    price   = round(closes[-1], 5)
+    prev    = round(closes[-2], 5)
+    change  = round(((price - prev) / prev) * 100, 3)
+    sma5    = round(sum(closes[-5:])  / 5, 5)
+    sma20   = round(sum(closes[-20:]) / 20, 5) if len(closes) >= 20 else round(sum(closes) / len(closes), 5)
+    rsi     = calc_rsi(closes)
+    high14  = round(max(highs[-14:]), 5)
+    low14   = round(min(lows[-14:]),  5)
+
+    # Signal logic
+    bullish_points = 0
+    bearish_points = 0
+    if sma5 > sma20: bullish_points += 1
+    else:            bearish_points += 1
+    if rsi < 45:     bullish_points += 1
+    elif rsi > 55:   bearish_points += 1
+    if change > 0:   bullish_points += 1
+    else:            bearish_points += 1
+
+    direction  = "BUY 📈" if bullish_points > bearish_points else "SELL 📉"
+    is_buy     = bullish_points > bearish_points
+    confidence = min(55 + (abs(bullish_points - bearish_points) * 10), 80)
+
+    if is_buy:
+        entry   = f"{round(price, 5)} — {round(price * 1.0005, 5)}"
+        tp      = round(price * 1.005, 5)
+        sl      = round(price * 0.997, 5)
+        reason  = f"SMA5 ({sma5}) is {'above' if sma5 > sma20 else 'below'} SMA20 ({sma20}), RSI at {rsi}. Price showing {'bullish' if change > 0 else 'mixed'} momentum with {change}% daily change."
+    else:
+        entry   = f"{round(price * 0.9995, 5)} — {round(price, 5)}"
+        tp      = round(price * 0.995, 5)
+        sl      = round(price * 1.003, 5)
+        reason  = f"SMA5 ({sma5}) is {'above' if sma5 > sma20 else 'below'} SMA20 ({sma20}), RSI at {rsi}. Price showing {'bearish' if change < 0 else 'mixed'} momentum with {change}% daily change."
+
+    name = pair.replace("=X", "")
+    return (
+        f"🔵 *Direction:* {direction}\n"
+        f"⏱ *Timeframe:* 4H / Daily\n"
+        f"🎯 *Entry Zone:* {entry}\n"
+        f"✅ *Take Profit:* {tp}\n"
+        f"🛑 *Stop Loss:* {sl}\n"
+        f"📊 *Confidence:* {confidence}%\n"
+        f"📈 *14D Range:* {low14} — {high14}\n"
+        f"💡 *Reason:* {reason}"
+    )
 
 def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -94,21 +112,23 @@ def handle(chat_id, text):
     if cmd == "/start":
         send_message(chat_id,
             "👋 *Forex Signal Bot*\n\n"
-            "• /signal — all pairs\n"
-            "• /pairs — list pairs\n\n"
-            "📅 Auto signal at *08:00 UTC* daily")
+            "Commands:\n"
+            "• /signal — signals for all pairs\n"
+            "• /pairs — list tracked pairs\n\n"
+            "📅 Daily auto-signal at *08:00 UTC*")
     elif cmd == "/signal":
         send_message(chat_id, "⏳ Analyzing all pairs...")
         for pair in PAIRS:
-            send_message(chat_id, f"📊 *{pair}*\n\n{analyze(pair)}\n\n⏰ {now_utc()}")
-            time.sleep(3)
+            send_message(chat_id, f"📊 *{pair.replace('=X','')}*\n\n{analyze(pair)}\n\n⏰ {now_utc()}")
+            time.sleep(2)
     elif cmd == "/pairs":
-        send_message(chat_id, "📈 *Pairs*\n\n" + "\n".join(f"• {p}" for p in PAIRS))
+        lines = "\n".join(f"• {p.replace('=X','')}" for p in PAIRS)
+        send_message(chat_id, f"📈 *Tracked Pairs*\n\n{lines}")
 
 def daily_job():
     for pair in PAIRS:
-        send_message(CHAT_ID, f"🌅 *Daily — {pair}*\n\n{analyze(pair)}\n\n⏰ {now_utc()}")
-        time.sleep(3)
+        send_message(CHAT_ID, f"🌅 *Daily Signal — {pair.replace('=X','')}*\n\n{analyze(pair)}\n\n⏰ {now_utc()}")
+        time.sleep(2)
 
 def run_scheduler():
     schedule.every().day.at("08:00").do(daily_job)
@@ -135,4 +155,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+                      
