@@ -44,29 +44,37 @@ def get_data(pair):
 
 def ask_gemini(prompt):
     try:
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+        r = requests.post(url,
             json={"contents": [{"parts": [{"text": prompt}]}]},
             timeout=15)
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        resp = r.json()
+        print(f"Gemini status: {r.status_code}")
+        if "candidates" in resp:
+            return resp["candidates"][0]["content"]["parts"][0]["text"]
+        elif "error" in resp:
+            print(f"Gemini API error: {resp['error']}")
+            return "AI analysis unavailable right now."
+        else:
+            print(f"Unexpected Gemini response: {resp}")
+            return "AI analysis unavailable right now."
     except Exception as e:
-        print(f"Gemini error: {e}")
+        print(f"Gemini exception: {e}")
         return "AI analysis unavailable right now."
 
 def analyze(pair):
     closes = get_data(pair)
     if not closes or len(closes) < 5:
         return f"Could not fetch data for {pair}"
-    label  = pair.replace("=X", "").replace("USD", "/USD").replace("EUR/", "EUR/")
     change = round(((closes[0] - closes[1]) / closes[1]) * 100, 4)
-    sma5   = round(sum(closes[:5])  / 5,  5)
-    sma20  = round(sum(closes[:min(20,len(closes))]) / min(20,len(closes)), 5)
+    sma5   = round(sum(closes[:5]) / 5, 5)
+    sma20  = round(sum(closes[:min(20, len(closes))]) / min(20, len(closes)), 5)
     trend  = "BULLISH" if sma5 > sma20 else "BEARISH"
     prompt = f"""You are a professional forex trader. Analyze {pair}:
-Latest Rate: {round(closes[0],5)}
+Latest Rate: {round(closes[0], 5)}
 Daily Change: {change}%
 5-day SMA: {sma5} | 20-day SMA: {sma20} | Trend: {trend}
-Last 5 closes: {', '.join(str(round(c,5)) for c in closes[:5])}
+Last 5 closes: {', '.join(str(round(c, 5)) for c in closes[:5])}
 
 Reply with a clean Telegram message:
 🔵 Direction: BUY or SELL
@@ -127,4 +135,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
