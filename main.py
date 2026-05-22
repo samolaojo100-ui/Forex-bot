@@ -25,10 +25,9 @@ ALL_PAIRS = {
 
 # ── MENU ───────────────────────────────────────────────────────────────────────
 MENU = [
-    ["⚡ 1M", "🚀 5M"],
-    ["📈 15M", "🔥 30M"],
-    ["🧠 1H", "👑 Daily"],
-    ["📰 News"]
+    ["⚡ 1m", "🚀 5m"],
+    ["📈 15m", "🔥 30m"],
+    ["🧠 1h", "👑 daily"]
 ]
 
 # ── UTIL ───────────────────────────────────────────────────────────────────────
@@ -196,29 +195,26 @@ def scan(cid, acc, risk, tf):
 # ── BOT LOOP ───────────────────────────────────────────────────────────────────
 def handle(cid, txt, acc=100, risk=2):
 
-    txt = txt.lower()
+ text = txt.lower().strip()
 
-    if txt == "⚡ 1m":
-        scan(cid, acc, risk, "1m")
+# normalize weird button clicks
+if text in ["⚡", "1", "1m", "1 m", "1 minute"]:
+    scan(cid, s["account"], s["risk"], "1m")
 
-    elif txt == "🚀 5m":
-        scan(cid, acc, risk, "5m")
+elif text in ["🚀", "5", "5m", "5 m", "5 minute"]:
+    scan(cid, s["account"], s["risk"], "5m")
 
-    elif txt == "📈 15m":
-        scan(cid, acc, risk, "15m")
+elif text in ["📈", "15", "15m", "15 m"]:
+    scan(cid, s["account"], s["risk"], "15m")
 
-    elif txt == "🔥 30m":
-        scan(cid, acc, risk, "30m")
+elif text in ["🔥", "30", "30m", "30 m"]:
+    scan(cid, s["account"], s["risk"], "30m")
 
-    elif txt == "🧠 1h":
-        scan(cid, acc, risk, "1h")
+elif text in ["🧠", "1h", "1 hr", "hour"]:
+    scan(cid, s["account"], s["risk"], "1h")
 
-    elif txt == "👑 daily":
-        scan(cid, acc, risk, "1d")
-
-    else:
-        send(cid,
-             "Choose timeframe:\n⚡1M 🚀5M 📈15M 🔥30M 🧠1H 👑Daily")
+elif text in ["👑", "daily", "1d"]:
+    scan(cid, s["account"], s["risk"], "1d")
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
