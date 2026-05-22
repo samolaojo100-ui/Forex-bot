@@ -139,9 +139,11 @@ def analyze_tf(pair, tf_name, period, interval):
 def full_analysis(pair):
     name = pair.replace("=X", "")
     tfs  = [
-        ("1H",    "5d",  "1h"),
-        ("4H",    "15d", "1h"),
-        ("Daily", "1mo", "1d"),
+    ("15M",  "2d",  "15m"),
+    ("30M",  "5d",  "30m"),
+    ("1H",   "5d",  "1h"),
+    ("4H",   "15d", "1h"),
+    ("Daily","1mo", "1d"),
     ]
     parts = [f"📊 *{name} — Multi-TF Analysis*\n{'─'*22}"]
     for tf_name, period, interval in tfs:
