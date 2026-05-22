@@ -613,4 +613,28 @@ def main():
     offset = None
     while True:
         try:
-     
+     def run_scheduler():
+    schedule.every().day.at("08:00").do(daily_job)
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+def main():
+    print("Bot running...")
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    offset = None
+    while True:
+        try:
+            ups = get_updates(offset)
+            if ups.get("ok"):
+                for u in ups.get("result", []):
+                    offset = u["update_id"] + 1
+                    msg = u.get("message", {})
+                    if "text" in msg:
+                        handle(msg["chat"]["id"], msg["text"])
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main()
