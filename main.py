@@ -613,7 +613,7 @@ def main():
     offset = None
     while True:
         try:
-     def run_scheduler():
+def run_scheduler():
     schedule.every().day.at("08:00").do(daily_job)
     while True:
         schedule.run_pending()
