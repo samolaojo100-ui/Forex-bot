@@ -6,12 +6,12 @@ import json
 from datetime import datetime, timezone
 import yfinance as yf
 
-# ── ENV ────────────────────────────────────────────────────────────────────────
-TOKEN   = os.getenv("TELEGRAM_TOKEN")
+# ── ENV ─────────────────────────────────────────────
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-URL     = f"https://api.telegram.org/bot{TOKEN}"
+URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# ── PAIRS ──────────────────────────────────────────────────────────────────────
+# ── PAIRS ───────────────────────────────────────────
 ALL_PAIRS = {
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
@@ -23,22 +23,22 @@ ALL_PAIRS = {
     "XAUUSD": "GC=F",
 }
 
-# ── MENU ───────────────────────────────────────────────────────────────────────
+# ── MENU ────────────────────────────────────────────
 MENU = [
     ["⚡ 1m", "🚀 5m"],
     ["📈 15m", "🔥 30m"],
     ["🧠 1h", "👑 daily"]
 ]
 
-# ── UTIL ───────────────────────────────────────────────────────────────────────
+# ── TELEGRAM ────────────────────────────────────────
 def send(cid, text):
     try:
         requests.post(f"{URL}/sendMessage", json={
             "chat_id": cid,
             "text": text
         })
-    except Exception as e:
-        print("Send error:", e)
+    except:
+        pass
 
 def get_updates(offset=None):
     try:
@@ -51,15 +51,14 @@ def get_updates(offset=None):
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-# ── DATA ───────────────────────────────────────────────────────────────────────
+# ── MARKET DATA ─────────────────────────────────────
 def fetch(ticker, period, interval):
     try:
-        data = yf.Ticker(ticker).history(period=period, interval=interval)
-        return data
+        return yf.Ticker(ticker).history(period=period, interval=interval)
     except:
         return None
 
-# ── INDICATORS ─────────────────────────────────────────────────────────────────
+# ── INDICATORS ──────────────────────────────────────
 def ema(values, period):
     k = 2 / (period + 1)
     e = values[0]
@@ -67,9 +66,8 @@ def ema(values, period):
         e = v * k + e * (1 - k)
     return e
 
-def rsi(values, period=14):
-    gains = []
-    losses = []
+def rsi(values):
+    gains, losses = [], []
 
     for i in range(1, len(values)):
         diff = values[i] - values[i - 1]
@@ -78,20 +76,20 @@ def rsi(values, period=14):
         else:
             losses.append(abs(diff))
 
-    avg_gain = sum(gains[-period:]) / period if gains else 1
-    avg_loss = sum(losses[-period:]) / period if losses else 1
+    avg_gain = sum(gains[-14:]) / 14 if gains else 1
+    avg_loss = sum(losses[-14:]) / 14 if losses else 1
 
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ── TIMEFRAME MAP ──────────────────────────────────────────────────────────────
-TF_MAP = {
+# ── TIMEFRAME MAP ───────────────────────────────────
+TF = {
     "1m": ("1d", "1m"),
     "5m": ("5d", "5m"),
     "15m": ("5d", "15m"),
     "30m": ("1mo", "30m"),
     "1h": ("1mo", "1h"),
-    "1d": ("3mo", "1d")
+    "daily": ("3mo", "1d")
 }
 
 TF_LABEL = {
@@ -100,13 +98,13 @@ TF_LABEL = {
     "15m": "15 Minutes",
     "30m": "30 Minutes",
     "1h": "1 Hour",
-    "1d": "Daily"
+    "daily": "Daily"
 }
 
-# ── SCORE ──────────────────────────────────────────────────────────────────────
+# ── SCORE ───────────────────────────────────────────
 def score_pair(name, ticker, tf="5m"):
 
-    period, interval = TF_MAP.get(tf, ("5d", "5m"))
+    period, interval = TF.get(tf, ("5d", "5m"))
     data = fetch(ticker, period, interval)
 
     if data is None or len(data) < 50:
@@ -149,7 +147,7 @@ def score_pair(name, ticker, tf="5m"):
         "score": score
     }
 
-# ── FORMAT ─────────────────────────────────────────────────────────────────────
+# ── FORMAT ──────────────────────────────────────────
 def format_signal(d, acc, risk, tf):
 
     risk_usd = round(acc * (risk / 100), 2)
@@ -157,16 +155,16 @@ def format_signal(d, acc, risk, tf):
     return (
         f"🚨 FOREX SIGNAL 🚨\n\n"
         f"📊 {d['name']}\n"
-        f"⏰ {TF_LABEL.get(tf, tf)}\n"
+        f"⏰ {TF_LABEL.get(tf)}\n"
         f"📈 {d['direction']}\n\n"
         f"🎯 Entry: {d['price']}\n"
-        f"🛑 SL / TP: Auto (1:2)\n\n"
+        f"🛑 SL/TP: Auto (1:2)\n\n"
         f"💰 Risk: ${risk_usd}\n"
         f"🔥 Score: {d['score']}/7\n"
         f"🕐 {now()}"
     )
 
-# ── SCAN ──────────────────────────────────────────────────────────────────────
+# ── SCAN ────────────────────────────────────────────
 def scan(cid, acc, risk, tf):
 
     send(cid, f"Scanning {TF_LABEL.get(tf)}...")
@@ -192,31 +190,34 @@ def scan(cid, acc, risk, tf):
     for r in top:
         send(cid, format_signal(r, acc, risk, tf))
 
-# ── BOT LOOP ───────────────────────────────────────────────────────────────────
+# ── HANDLE ──────────────────────────────────────────
 def handle(cid, txt, acc=100, risk=2):
 
- text = txt.lower().strip()
+    text = txt.lower().strip()
 
-# normalize weird button clicks
-if text in ["⚡", "1", "1m", "1 m", "1 minute"]:
-    scan(cid, s["account"], s["risk"], "1m")
+    if text in ["⚡ 1m", "⚡", "1m", "1", "1 minute"]:
+        scan(cid, acc, risk, "1m")
 
-elif text in ["🚀", "5", "5m", "5 m", "5 minute"]:
-    scan(cid, s["account"], s["risk"], "5m")
+    elif text in ["🚀 5m", "5m", "5"]:
+        scan(cid, acc, risk, "5m")
 
-elif text in ["📈", "15", "15m", "15 m"]:
-    scan(cid, s["account"], s["risk"], "15m")
+    elif text in ["📈 15m", "15m", "15"]:
+        scan(cid, acc, risk, "15m")
 
-elif text in ["🔥", "30", "30m", "30 m"]:
-    scan(cid, s["account"], s["risk"], "30m")
+    elif text in ["🔥 30m", "30m", "30"]:
+        scan(cid, acc, risk, "30m")
 
-elif text in ["🧠", "1h", "1 hr", "hour"]:
-    scan(cid, s["account"], s["risk"], "1h")
+    elif text in ["🧠 1h", "1h", "hour"]:
+        scan(cid, acc, risk, "1h")
 
-elif text in ["👑", "daily", "1d"]:
-    scan(cid, s["account"], s["risk"], "1d")
+    elif text in ["👑 daily", "daily", "1d"]:
+        scan(cid, acc, risk, "daily")
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+    else:
+        send(cid,
+             "Choose timeframe:\n⚡1M 🚀5M 📈15M 🔥30M 🧠1H 👑Daily")
+
+# ── MAIN LOOP ───────────────────────────────────────
 def main():
 
     print("Bot running...")
