@@ -1,7 +1,6 @@
 import os
 import requests
 import time
-import threading
 import json
 from datetime import datetime, timezone
 import yfinance as yf
@@ -25,9 +24,9 @@ ALL_PAIRS = {
 
 # ── MENU ────────────────────────────────────────────
 MENU = [
-    ["⚡ 1m", "🚀 5m"],
-    ["📈 15m", "🔥 30m"],
-    ["🧠 1h", "👑 daily"]
+    ["🚀 5m", "📈 15m"],
+    ["🔥 30m", "🧠 1h"],
+    ["👑 daily"]
 ]
 
 # ── TELEGRAM ────────────────────────────────────────
@@ -51,7 +50,7 @@ def get_updates(offset=None):
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-# ── MARKET DATA ─────────────────────────────────────
+# ── DATA ────────────────────────────────────────────
 def fetch(ticker, period, interval):
     try:
         return yf.Ticker(ticker).history(period=period, interval=interval)
@@ -82,9 +81,8 @@ def rsi(values):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ── TIMEFRAME MAP ───────────────────────────────────
+# ── TIMEFRAMES ──────────────────────────────────────
 TF = {
-    "1m": ("1d", "1m"),
     "5m": ("5d", "5m"),
     "15m": ("5d", "15m"),
     "30m": ("1mo", "30m"),
@@ -93,7 +91,6 @@ TF = {
 }
 
 TF_LABEL = {
-    "1m": "1 Minute",
     "5m": "5 Minutes",
     "15m": "15 Minutes",
     "30m": "30 Minutes",
@@ -101,7 +98,32 @@ TF_LABEL = {
     "daily": "Daily"
 }
 
-# ── SCORE ───────────────────────────────────────────
+# ── SL / TP ENGINE (FIXED) ──────────────────────────
+def get_sl_tp(price, direction, tf):
+
+    multipliers = {
+        "5m": 0.0020,
+        "15m": 0.0035,
+        "30m": 0.0050,
+        "1h": 0.0070,
+        "daily": 0.0120
+    }
+
+    m = multipliers.get(tf, 0.003)
+
+    sl_distance = price * m
+    tp_distance = sl_distance * 2  # 1:2 RR
+
+    if direction == "BUY":
+        sl = price - sl_distance
+        tp = price + tp_distance
+    else:
+        sl = price + sl_distance
+        tp = price - tp_distance
+
+    return round(sl, 5), round(tp, 5)
+
+# ── SCORE ENGINE ────────────────────────────────────
 def score_pair(name, ticker, tf="5m"):
 
     period, interval = TF.get(tf, ("5d", "5m"))
@@ -147,10 +169,12 @@ def score_pair(name, ticker, tf="5m"):
         "score": score
     }
 
-# ── FORMAT ──────────────────────────────────────────
+# ── FORMAT SIGNAL ───────────────────────────────────
 def format_signal(d, acc, risk, tf):
 
     risk_usd = round(acc * (risk / 100), 2)
+
+    sl, tp = get_sl_tp(d["price"], d["direction"], tf)
 
     return (
         f"🚨 FOREX SIGNAL 🚨\n\n"
@@ -158,7 +182,8 @@ def format_signal(d, acc, risk, tf):
         f"⏰ {TF_LABEL.get(tf)}\n"
         f"📈 {d['direction']}\n\n"
         f"🎯 Entry: {d['price']}\n"
-        f"🛑 SL/TP: Auto (1:2)\n\n"
+        f"🛑 SL: {sl}\n"
+        f"✅ TP: {tp}\n\n"
         f"💰 Risk: ${risk_usd}\n"
         f"🔥 Score: {d['score']}/7\n"
         f"🕐 {now()}"
@@ -195,10 +220,7 @@ def handle(cid, txt, acc=100, risk=2):
 
     text = txt.lower().strip()
 
-    if text in ["⚡ 1m", "⚡", "1m", "1", "1 minute"]:
-        scan(cid, acc, risk, "1m")
-
-    elif text in ["🚀 5m", "5m", "5"]:
+    if text in ["🚀 5m", "5m", "5"]:
         scan(cid, acc, risk, "5m")
 
     elif text in ["📈 15m", "15m", "15"]:
@@ -214,8 +236,7 @@ def handle(cid, txt, acc=100, risk=2):
         scan(cid, acc, risk, "daily")
 
     else:
-        send(cid,
-             "Choose timeframe:\n⚡1M 🚀5M 📈15M 🔥30M 🧠1H 👑Daily")
+        send(cid, "Choose timeframe:\n🚀5m 📈15m 🔥30m 🧠1H 👑Daily")
 
 # ── MAIN LOOP ───────────────────────────────────────
 def main():
