@@ -523,3 +523,219 @@ def get_news():
         return "\n".join(lines)
     except:
         return "⚠️ Could not fetch news right now."
+def start_setup(cid):
+    set_wait(cid, "waiting_account")
+    send(cid,
+        "👋 *Welcome to Forex Signal Bot Pro!*\n\n"
+        "I scan 8 major pairs and only send you\n"
+        "the strongest setups automatically.\n\n"
+        "💰 *What is your account balance?*\n"
+        "_(Type the amount e.g. 500)_")
+
+def handle_setup(cid, txt, s):
+    wait = get_wait(cid)
+    if wait == "waiting_account":
+        try:
+            amt = float(txt.replace("$", "").replace(",", ""))
+            s["account"] = amt
+            ss(s)
+            set_wait(cid, "waiting_risk")
+            send(cid,
+                f"✅ Account: *${amt}*\n\n"
+                f"📊 *What % risk per trade?*\n\n"
+                f"• Safe:       *1%* = ${round(amt*0.01,2)}/trade\n"
+                f"• Moderate:   *2%* = ${round(amt*0.02,2)}/trade\n"
+                f"• Aggressive: *3%* = ${round(amt*0.03,2)}/trade\n\n"
+                f"_(Type a number e.g. 2)_")
+        except:
+            send(cid, "❌ Please type just the number e.g. *500*")
+    elif wait == "waiting_risk":
+        try:
+            pct = float(txt.replace("%", ""))
+            if pct > 10:
+                send(cid, "⚠️ Too high! Please enter between 1-5%")
+                return
+            s["risk"] = pct
+            s["setup_done"] = True
+            ss(s)
+            clear_wait(cid)
+            risk_usd = round(s["account"] * (pct / 100), 2)
+            send(cid,
+                f"🎯 *Setup Complete!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 Account: ${s['account']}\n"
+                f"📊 Risk: {pct}% = ${risk_usd}/trade\n"
+                f"💵 Max profit/trade: ${round(risk_usd*2,2)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"All signals personalised for you!\n"
+                f"Tap a button below 👇",
+                buttons=MENU)
+        except:
+            send(cid, "❌ Please type just the number e.g. *2*")
+
+def handle(cid, txt):
+    s = ls()
+    txt = txt.strip()
+    wait = get_wait(cid)
+    if wait in ["waiting_account", "waiting_risk"]:
+        handle_setup(cid, txt, s)
+        return
+    if not s.get("setup_done") and txt.lower() not in ["/start", "⚙️ settings"]:
+        start_setup(cid)
+        return
+    cmd = txt.lower()
+    if cmd == "/start":
+        if not s.get("setup_done"):
+            start_setup(cid)
+        else:
+            send(cid,
+                f"👋 *Welcome back!*\n\n"
+                f"💰 Account: ${s['account']} | Risk: {s['risk']}%\n\n"
+                f"I scan 8 pairs and only show solid setups.\n"
+                f"What would you like to do? 👇",
+                buttons=MENU)
+    elif cmd in ["📡 signal", "/signal"]:
+        threading.Thread(target=find_solid_pairs, args=(cid, s["account"], s["risk"]), daemon=True).start()
+    elif cmd in ["🔍 best setup", "/scan"]:
+        threading.Thread(target=best_setup, args=(cid, s["account"], s["risk"]), daemon=True).start()
+    elif cmd in ["📰 news", "/news"]:
+        send(cid, get_news(), buttons=MENU)
+    elif cmd in ["⚙️ settings", "/settings"]:
+        start_setup(cid)
+    elif cmd in ["💼 portfolio", "/portfolio"]:
+        j = lj()
+        if not j:
+            send(cid, "📁 No trades yet.\nUse 📓 Journal to log your first trade.", buttons=MENU)
+            return
+        cl = [t for t in j if t["result"] in ["win", "loss"]]
+        w = len([t for t in cl if t["result"] == "win"])
+        wr = round(w / len(cl) * 100, 1) if cl else 0
+        send(cid,
+            f"💼 *Portfolio Dashboard*\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Account: ${s['account']}\n"
+            f"📊 Risk/trade: {s['risk']}%\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📈 Total: {len(j)}\n"
+            f"✅ Wins: {w}\n"
+            f"❌ Losses: {len(cl)-w}\n"
+            f"🎯 Win Rate: {wr}%\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{'🔥 Excellent!' if wr>=60 else '💪 Keep going!' if wr>=40 else '⚠️ Review strategy'}",
+            buttons=MENU)
+    elif cmd in ["📓 journal", "/journal"]:
+        send(cid,
+            "📓 *Trade Journal*\n\n"
+            "➕ Log trade:\n"
+            "`/jadd EURUSD BUY 1.16 1.17 1.155`\n\n"
+            "✅ Close trade:\n"
+            "`/jclose 0 win` or `/jclose 0 loss`\n\n"
+            "📊 Stats:\n"
+            "`/jstats`",
+            buttons=MENU)
+    elif cmd.startswith("/jadd"):
+        p = txt.split()
+        try:
+            t = {"pair": p[1].upper(), "dir": p[2].upper(), "entry": float(p[3]),
+                 "tp": float(p[4]), "sl": float(p[5]), "date": now(), "result": "open"}
+            j = lj(); j.append(t); sj(j)
+            rr = round(abs(t['tp']-t['entry'])/abs(t['sl']-t['entry']), 2)
+            send(cid,
+                f"✅ *Trade #{len(j)-1} Logged*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 {t['pair']} | {t['dir']}\n"
+                f"🎯 Entry: {t['entry']}\n"
+                f"✅ TP: {t['tp']}\n"
+                f"🛑 SL: {t['sl']}\n"
+                f"📐 R:R = 1:{rr}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━",
+                buttons=MENU)
+        except:
+            send(cid, "❌ Use: `/jadd EURUSD BUY 1.16 1.17 1.155`", buttons=MENU)
+    elif cmd.startswith("/jclose"):
+        p = txt.split()
+        try:
+            j = lj(); j[int(p[1])]["result"] = p[2]; sj(j)
+            send(cid, f"✅ Trade #{p[1]} marked *{p[2].upper()}*", buttons=MENU)
+        except:
+            send(cid, "❌ Use: `/jclose 0 win`", buttons=MENU)
+    elif cmd == "/jstats":
+        j = lj()
+        if not j:
+            send(cid, "No trades yet.", buttons=MENU)
+            return
+        cl = [t for t in j if t["result"] in ["win", "loss"]]
+        w = len([t for t in cl if t["result"] == "win"])
+        wr = round(w / len(cl) * 100, 1) if cl else 0
+        send(cid,
+            f"📊 *Journal Stats*\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Total: {len(j)} | ✅ {w}W | ❌ {len(cl)-w}L\n"
+            f"🎯 Win Rate: {wr}%\n"
+            f"🟡 Open: {len([t for t in j if t['result']=='open'])}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            buttons=MENU)
+    elif cmd.startswith("/risk"):
+        p = txt.split()
+        try:
+            pair = p[1].upper()
+            d = p[2].upper()
+            ent = float(p[3])
+            sl_p = float(p[4])
+            is_gold = "XAU" in pair
+            is_jpy = "JPY" in pair
+            pip = 1.0 if is_gold else (0.01 if is_jpy else 0.0001)
+            pips = round(abs(ent - sl_p) / pip, 1)
+            ru = round(s["account"] * (s["risk"] / 100), 2)
+            pip_val = 1.0 if is_gold else 10
+            lot = round(ru / (pips * pip_val), 4) if pips > 0 else 0
+            tp = round(ent + (ent - sl_p) * 2 if d == "BUY" else ent - (sl_p - ent) * 2, 5)
+            send(cid,
+                f"🧮 *Risk Calculator*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 {pair} | {d}\n"
+                f"🎯 Entry: {ent}\n"
+                f"🛑 SL: {sl_p} ({pips} pips)\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 Account: ${s['account']}\n"
+                f"💸 Risk: ${ru} ({s['risk']}%)\n"
+                f"📦 Lot: {lot}\n"
+                f"✅ TP: {tp}\n"
+                f"💵 Profit: ${round(ru*2,2)}\n"
+                f"📐 R:R: 1:2\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━",
+                buttons=MENU)
+        except:
+            send(cid, "❌ Use: `/risk EURUSD BUY 1.1620 1.1580`", buttons=MENU)
+
+def daily_job():
+    s = ls()
+    if not s.get("account"):
+        return
+    find_solid_pairs(CHAT_ID, s["account"], s["risk"])
+
+def run_scheduler():
+    schedule.every().day.at("08:00").do(daily_job)
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+def main():
+    print("Bot running...")
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    offset = None
+    while True:
+        try:
+            ups = get_updates(offset)
+            if ups.get("ok"):
+                for u in ups.get("result", []):
+                    offset = u["update_id"] + 1
+                    msg = u.get("message", {})
+                    if "text" in msg:
+                        handle(msg["chat"]["id"], msg["text"])
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main()
