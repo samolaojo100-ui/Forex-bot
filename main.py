@@ -104,7 +104,7 @@ def handle(chat_id, text):
         send_message(chat_id, f"⏳ Analyzing {pair}...")
         send_message(chat_id,
             f"📊 *{pair}*\n\n{analyze(pair)}\n\n"
-            f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+            f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     elif text == "/pairs":
         send_message(chat_id, "📈 *Pairs*\n\n" + "\n".join(f"• {p}" for p in PAIRS))
 
