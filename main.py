@@ -402,7 +402,8 @@ def format_signal(d, acc, risk, tf_biases=None, tf_agree=False):
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg, tp, sl
-def generate_chart(name, ticker, direction, entry, tp, sl, ema50_val, ema200_val):
+def generate_chart(if not CHARTS_ENABLED:
+        return None):
     try:
         h = yf.Ticker(ticker).history(period="1mo", interval="1d")
         if h is None or h.empty or len(h)<5: return None
