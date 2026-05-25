@@ -10,9 +10,8 @@ try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    CHARTS_ENABLED = True
-except:
-    CHARTS_ENABLED = False
+    if not CHARTS_ENABLED:
+        return None
 TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 URL     = f"https://api.telegram.org/bot{TOKEN}"
