@@ -272,7 +272,7 @@ def detect_structure(closes, highs, lows):
 def get_tf_bias(ticker):
     """Gets bias for 1H, 4H, and Daily. All must agree for high confidence."""
     biases = {}
-for tf_name,period,interval in [("15m","5d","15m"),("30m","15d","30m"),("1h","1mo","1h"),("4h","3mo","1h"),("1d","3mo","1d")]:
+    for tf_name,period,interval in [("15m","5d","15m"),("30m","15d","30m"),("1h","1mo","1h"),("4h","3mo","1h"),("1d","3mo","1d")]:
         try:
             h = yf.Ticker(ticker).history(period=period, interval=interval)
             if h is None or h.empty or len(h) < 20:
