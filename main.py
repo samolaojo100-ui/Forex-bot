@@ -45,11 +45,28 @@ def ask_gemini(prompt):
     try:
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
+            json={
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt}
+                        ]
+                    }
+                ]
+            },
             timeout=15
         )
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    except:
+
+        data = r.json()
+
+        print("========== GEMINI RESPONSE ==========")
+        print(data)
+        print("=====================================")
+
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    except Exception as e:
+        print("GEMINI ERROR:", e)
         return "AI analysis unavailable right now."
 
 def analyze(pair):
