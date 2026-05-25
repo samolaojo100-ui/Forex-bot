@@ -32,13 +32,30 @@ def get_updates(offset=None):
 
 def get_data(pair):
     try:
-        r = requests.get("https://api.twelvedata.com/time_series", params={
-            "symbol": pair, "interval": "1day",
-            "outputsize": 20, "apikey": TWELVE_DATA_KEY
-        }, timeout=10)
+        r = requests.get(
+            "https://api.twelvedata.com/time_series",
+            params={
+                "symbol": pair,
+                "interval": "1day",
+                "outputsize": 20,
+                "apikey": TWELVE_DATA_KEY
+            },
+            timeout=10
+        )
+
         data = r.json()
-        return data.get("values")
-    except:
+
+        print("========== TWELVE DATA ==========")
+        print(data)
+        print("=================================")
+
+        if "values" not in data:
+            return None
+
+        return data["values"]
+
+    except Exception as e:
+        print("FETCH ERROR:", e)
         return None
 
 def ask_gemini(prompt):
