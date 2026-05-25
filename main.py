@@ -398,3 +398,212 @@ def format_signal(d, acc, risk, tf_biases=None, tf_agree=False):
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg, tp, sl
+def generate_chart(name, ticker, direction, entry, tp, sl, ema50_val, ema200_val):
+    try:
+        h = yf.Ticker(ticker).history(period="1mo", interval="1d")
+        if h is None or h.empty or len(h)<5: return None
+        h=h.tail(40)
+        opens=h["Open"].tolist(); highs=h["High"].tolist()
+        lows=h["Low"].tolist();   closes=h["Close"].tolist()
+        xs=list(range(len(closes)))
+        fig,(ax1,ax2)=plt.subplots(2,1,figsize=(12,8),
+                                    gridspec_kw={"height_ratios":[3,1]},
+                                    facecolor="#0d1117")
+        for ax in [ax1,ax2]:
+            ax.set_facecolor("#0d1117")
+            ax.tick_params(colors="#8b949e",labelsize=8)
+            for spine in ax.spines.values(): spine.set_color("#30363d")
+        for i in xs:
+            o,h_val,l,c=opens[i],highs[i],lows[i],closes[i]
+            color="#3fb950" if c>=o else "#f85149"
+            ax1.plot([i,i],[l,h_val],color=color,linewidth=1,zorder=2)
+            ax1.bar(i,abs(c-o),bottom=min(o,c),color=color,width=0.7,alpha=0.95,zorder=3)
+        ax1.axhline(ema50_val,color="#58a6ff",linewidth=1.5,linestyle="--",
+                    alpha=0.9,label=f"EMA50  {round(ema50_val,5)}",zorder=4)
+        ax1.axhline(ema200_val,color="#e3b341",linewidth=1.5,linestyle="--",
+                    alpha=0.9,label=f"EMA200 {round(ema200_val,5)}",zorder=4)
+        ax1.axhline(entry,color="#ffffff",linewidth=1.8,linestyle="-",
+                    alpha=1.0,label=f"Entry  {entry}",zorder=5)
+        ax1.axhline(tp,color="#3fb950",linewidth=1.8,linestyle="-",
+                    alpha=1.0,label=f"TP     {tp}",zorder=5)
+        ax1.axhline(sl,color="#f85149",linewidth=1.8,linestyle="-",
+                    alpha=1.0,label=f"SL     {sl}",zorder=5)
+        ax1.fill_between(xs,entry,tp,
+                         color="#3fb950" if direction=="BUY" else "#f85149",alpha=0.07)
+        ax1.fill_between(xs,entry,sl,
+                         color="#f85149" if direction=="BUY" else "#3fb950",alpha=0.07)
+        dir_color="#3fb950" if direction=="BUY" else "#f85149"
+        dir_icon="▲ BUY" if direction=="BUY" else "▼ SELL"
+        ax1.set_title(f"  {name}  |  {dir_icon}  |  Daily Chart",
+                      color=dir_color,fontsize=14,fontweight="bold",loc="left",pad=12)
+        ax1.legend(loc="upper left",facecolor="#161b22",edgecolor="#30363d",
+                   labelcolor="#c9d1d9",fontsize=8,framealpha=0.9)
+        ax1.set_xlim(-1,len(xs)); ax1.set_xticks([])
+        ax1.set_ylabel("Price",color="#8b949e",fontsize=9)
+        ax1.grid(axis="y",color="#21262d",linewidth=0.5,zorder=1)
+        rsi_vals=[calc_rsi(closes[max(0,j-14):j+1]) for j in range(len(closes))]
+        ax2.plot(xs,rsi_vals,color="#bc8cff",linewidth=1.5)
+        ax2.axhline(70,color="#f85149",linewidth=0.8,linestyle="--",alpha=0.6)
+        ax2.axhline(30,color="#3fb950",linewidth=0.8,linestyle="--",alpha=0.6)
+        ax2.axhline(50,color="#8b949e",linewidth=0.5,linestyle="--",alpha=0.4)
+        ax2.fill_between(xs,rsi_vals,50,
+                         where=[r>=50 for r in rsi_vals],color="#bc8cff",alpha=0.12)
+        ax2.fill_between(xs,rsi_vals,50,
+                         where=[r<50 for r in rsi_vals],color="#bc8cff",alpha=0.06)
+        ax2.set_ylim(0,100); ax2.set_xlim(-1,len(xs))
+        ax2.set_ylabel("RSI",color="#8b949e",fontsize=9); ax2.set_xticks([])
+        ax2.grid(axis="y",color="#21262d",linewidth=0.5)
+        fig.text(0.98,0.02,"SamSos Forex Bot",color="#30363d",fontsize=9,
+                 ha="right",va="bottom")
+        plt.tight_layout(pad=1.5)
+        path=f"/tmp/chart_{name}.png"
+        plt.savefig(path,dpi=110,bbox_inches="tight",facecolor="#0d1117")
+        plt.close()
+        return path
+    except Exception as e:
+        print(f"Chart error: {e}"); return None
+
+def get_currency_strength():
+    currencies=["USD","EUR","GBP","JPY","CAD","AUD","NZD","CHF"]
+    strength={c:0 for c in currencies}
+    pairs_map={
+        "EURUSD=X":("EUR","USD"),"GBPUSD=X":("GBP","USD"),
+        "USDJPY=X":("USD","JPY"),"USDCAD=X":("USD","CAD"),
+        "AUDUSD=X":("AUD","USD"),"NZDUSD=X":("NZD","USD"),
+        "USDCHF=X":("USD","CHF"),"EURGBP=X":("EUR","GBP"),
+    }
+    for ticker,(base,quote) in pairs_map.items():
+        try:
+            h=yf.Ticker(ticker).history(period="5d",interval="1d")
+            if h is None or len(h)<2: continue
+            closes=h["Close"].tolist()
+            chg=(closes[-1]-closes[-2])/closes[-2]
+            strength[base]+=chg; strength[quote]-=chg
+        except: pass
+        time.sleep(0.3)
+    return strength
+
+def format_strength_ranking(strength):
+    ranked=sorted(strength.items(),key=lambda x:x[1],reverse=True)
+    lines=["📊 *Currency Strength*\n"+"━"*22]
+    medals=["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣"]
+    for i,(cur,score) in enumerate(ranked):
+        bar="█"*min(int(abs(score)*500)+1,8)
+        trend="▲" if score>0 else "▼"
+        lines.append(f"{medals[i]} *{cur}* {trend} {bar}")
+    strongest=ranked[0][0]; weakest=ranked[-1][0]
+    lines.append(f"\nBest Setup: BUY {strongest}/{weakest}")
+    lines.append(f"⏰ {now()}")
+    return "\n".join(lines)
+
+def log_signal(name,direction,entry,tp,sl):
+    log=load_sig_log()
+    log.append({"pair":name,"direction":direction,"entry":entry,
+                "tp":tp,"sl":sl,"date":now(),"result":"open"})
+    save_sig_log(log)
+
+def get_performance():
+    log=load_sig_log()
+    if not log:
+        return "No signals tracked yet.\nSignals are auto-tracked when you tap Signal."
+    closed=[s for s in log if s["result"] in ["win","loss"]]
+    wins=len([s for s in closed if s["result"]=="win"])
+    wr=round(wins/len(closed)*100,1) if closed else 0
+    open_c=len([s for s in log if s["result"]=="open"])
+    lines=[
+        "📊 *Signal Performance*\n"+"━"*22,
+        f"Total Signals: {len(log)}",
+        f"Wins: {wins}  |  Losses: {len(closed)-wins}",
+        f"Win Rate: {wr}%",
+        f"Open Signals: {open_c}",
+        "━"*22,
+        "Excellent!" if wr>=60 else "Keep improving." if wr>=45 else "Review your entries.",
+    ]
+    return "\n".join(lines)
+
+def find_solid_pairs(cid, acc, risk):
+    is_open,session,status=get_market_status()
+    if not is_open:
+        send(cid,
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📴 *MARKET CLOSED*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{status}\n\nI will notify you when market reopens.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━",buttons=MENU)
+        return
+    prime=is_prime_session()
+    if not prime:
+        send(cid,
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ *LOW QUALITY SESSION*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Session: {session}\nQuality: {status}\n\n"
+            f"Best signals: London 07:00-16:00 UTC\n"
+            f"or New York 12:00-21:00 UTC.\n\n"
+            f"Scanning anyway — be extra cautious.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━")
+    else:
+        send(cid,
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🟢 *MARKET OPEN*\n"
+            f"Session: {session}\nQuality: {status}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Scanning 8 pairs... please wait 30-60 seconds.")
+    news_safe,news_warnings=is_news_safe()
+    if not news_safe:
+        send(cid,
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ *HIGH IMPACT NEWS DETECTED*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            +"\n".join(f"• {w}" for w in news_warnings)
+            +f"\n\nTrade with caution.\n━━━━━━━━━━━━━━━━━━━━━━")
+    results=[]
+    for name,ticker in ALL_PAIRS.items():
+        try:
+            data=score_pair(name,ticker)
+            if data: results.append(data)
+        except Exception as e:
+            print(f"Score error {name}: {e}")
+        time.sleep(1)
+    premium=[]
+    for r in results:
+        try:
+            tf_biases=get_tf_bias(r["ticker"])
+            r["tf_biases"]=tf_biases
+            r["tf_agree"]=all_timeframes_agree(tf_biases,r["direction"])
+            pct=round((r["score"]/r["max_score"])*100) if r["max_score"]>0 else 0
+            if pct>=65 and r["tf_agree"]: premium.append(r)
+        except:
+            r["tf_biases"]={};r["tf_agree"]=False
+        time.sleep(1)
+    premium.sort(key=lambda x:x["score"],reverse=True)
+    if not premium:
+        fallback=sorted(results,key=lambda x:x["score"],reverse=True)[:2]
+        send(cid,
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ No premium setups right now.\n"
+            "Timeframes not fully aligned.\n\n"
+            "Showing top 2 — trade small or wait.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━")
+        for d in fallback:
+            tf_biases=d.get("tf_biases",{});tf_agree=d.get("tf_agree",False)
+            msg,tp,sl=format_signal(d,acc,risk,tf_biases,tf_agree)
+            chart_path=generate_chart(d["name"],d["ticker"],d["direction"],
+                                      d["price"],tp,sl,d["ema50"],d["ema200"])
+            if chart_path: send_photo(cid,chart_path,caption=f"*{d['name']}* — {d['direction']}")
+            send(cid,msg); log_signal(d["name"],d["direction"],d["price"],tp,sl)
+            time.sleep(1)
+    else:
+        send(cid,
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ *{len(premium)} PREMIUM SETUP(S) FOUND*\n"
+            f"All timeframes aligned.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━")
+        for d in premium:
+            tf_biases=d.get("tf_biases",{});tf_agree=d.get("tf_agree",False)
+            msg,tp,sl=format_signal(d,acc,risk,tf_biases,tf_agree)
+            chart_path=generate_chart(d["name"],d["ticker"],d["direction"],
+                                      d["price"],tp,sl,d["ema50"],d["ema200"])
+            if chart_path: send_photo(cid,chart_path,caption=f"*{d['name']}* — {d['direction']}")
+            send(cid,msg); log_signal(d["name"],d["direction"],d["price"],tp,sl)
+            time.sleep(1)
