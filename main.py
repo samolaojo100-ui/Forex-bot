@@ -6,9 +6,13 @@ import threading
 import json
 from datetime import datetime, timezone
 import yfinance as yf
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    CHARTS_ENABLED = True
+except:
+    CHARTS_ENABLED = False
 TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 URL     = f"https://api.telegram.org/bot{TOKEN}"
