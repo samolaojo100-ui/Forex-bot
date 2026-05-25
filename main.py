@@ -30,7 +30,7 @@ JF      = "/tmp/journal.json"
 WF      = "/tmp/waiting.json"
 SIG_LOG = "/tmp/sig_log.json"
 
-MENU_BUTTONS = [["📡 Signal", "🔍 Best Setup"], ["📰 News", "💼 Portfolio"], ["📓 Journal", "⚙️ Settings"]]
+MENU = [["📡 Signal", "🔍 Best Setup"], ["📰 News", "💼 Portfolio"], ["📓 Journal", "⚙️ Settings"]]
 
 # ── TELEGRAM ───────────────────────────────────────────────────────────────────
 def send(cid, txt, buttons=None):
