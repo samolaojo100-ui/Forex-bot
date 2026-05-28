@@ -86,6 +86,7 @@ def calc_sma(closes: list, period: int) -> float:
 # ── SIGNAL LOGIC ─────────────────────────────────────────────────────────────
 TIMEFRAME_CONFIG = {
     "5min":  {"interval": "5min",  "atr_sl_mult": 1.0, "atr_tp_mult": 1.5, "label": "5M"},
+      "15min":  {"interval": "15min",  "atr_sl_mult": 1.0, "atr_tp_mult": 1.5, "label": "15M"},
     "1h":    {"interval": "1h",    "atr_sl_mult": 1.5, "atr_tp_mult": 2.5, "label": "1H"},
     "4h":    {"interval": "4h",    "atr_sl_mult": 2.0, "atr_tp_mult": 3.0, "label": "4H"},
     "1day":  {"interval": "1day",  "atr_sl_mult": 2.5, "atr_tp_mult": 4.0, "label": "Daily"},
