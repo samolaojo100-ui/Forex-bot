@@ -1,6 +1,6 @@
-python-telegram-bot==21.3
-aiohttp==3.9.5
-pandas==2.2.2
-numpy==1.26.4
-apscheduler==3.10.4
-python-dotenv==1.0.1
+python-telegram-bot==20.7
+aiohttp==3.9.1
+pandas==2.1.4
+numpy==1.26.2
+APScheduler==3.10.4
+python-dotenv==1.0.0
