@@ -1,5 +1,0 @@
-yfinance
-requests
-schedule
-matplotlib
-pandas
