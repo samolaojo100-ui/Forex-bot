@@ -7,7 +7,6 @@ from config import TWELVEDATA_API_KEY, TIMEFRAMES
 logger   = logging.getLogger(__name__)
 BASE_URL = "https://api.twelvedata.com"
 
-
 async def fetch_ohlcv(session, symbol, interval, outputsize=100):
     symbol_fmt = symbol.replace("/", "")
     url = (
@@ -19,7 +18,6 @@ async def fetch_ohlcv(session, symbol, interval, outputsize=100):
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             data = await resp.json()
             if data.get("status") == "error" or "values" not in data:
-                logger.debug(f"No data {symbol} {interval}: {data.get('message','')}")
                 return None
             df = pd.DataFrame(data["values"])
             for col in ["open","high","low","close"]:
@@ -31,7 +29,6 @@ async def fetch_ohlcv(session, symbol, interval, outputsize=100):
         logger.warning(f"Fetch error {symbol} {interval}: {e}")
         return None
 
-
 async def fetch_all_timeframes(symbol):
     async with aiohttp.ClientSession() as session:
         results = {}
@@ -40,9 +37,8 @@ async def fetch_all_timeframes(symbol):
             if df is None or len(df) < 50:
                 return None
             results[tf] = df
-            await asyncio.sleep(8)  # 8 seconds between each request = stay under 8/min
+            await asyncio.sleep(8)
         return results
-
 
 async def fetch_multiple_pairs(pairs):
     data_map = {}
