@@ -8,8 +8,7 @@ logger   = logging.getLogger(__name__)
 BASE_URL = "https://api.twelvedata.com"
 
 
-async def fetch_ohlcv(session: aiohttp.ClientSession, symbol: str,
-                      interval: str, outputsize: int = 100) -> pd.DataFrame | None:
+async def fetch_ohlcv(session, symbol, interval, outputsize=100):
     symbol_fmt = symbol.replace("/", "")
     url = (
         f"{BASE_URL}/time_series"
@@ -25,7 +24,7 @@ async def fetch_ohlcv(session: aiohttp.ClientSession, symbol: str,
             df = pd.DataFrame(data["values"])
             for col in ["open","high","low","close"]:
                 df[col] = pd.to_numeric(df[col])
-            df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0)
+            df["volume"] = pd.to_numeric(df.get("volume",0), errors="coerce").fillna(0)
             df = df.sort_values("datetime").reset_index(drop=True)
             return df
     except Exception as e:
@@ -33,25 +32,24 @@ async def fetch_ohlcv(session: aiohttp.ClientSession, symbol: str,
         return None
 
 
-async def fetch_all_timeframes(symbol: str) -> dict | None:
+async def fetch_all_timeframes(symbol):
     async with aiohttp.ClientSession() as session:
         results = {}
         for tf in TIMEFRAMES:
             df = await fetch_ohlcv(session, symbol, tf)
             if df is None or len(df) < 50:
-                logger.debug(f"{symbol} {tf}: insufficient data")
                 return None
             results[tf] = df
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(8)  # 8 seconds between each request = stay under 8/min
         return results
 
 
-async def fetch_multiple_pairs(pairs: list) -> dict:
+async def fetch_multiple_pairs(pairs):
     data_map = {}
     for pair in pairs:
         logger.info(f"Fetching {pair}...")
         tfs = await fetch_all_timeframes(pair)
         if tfs:
             data_map[pair] = tfs
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(2)
     return data_map
