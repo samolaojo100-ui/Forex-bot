@@ -1,12 +1,9 @@
 from datetime import datetime, timezone
-from config import SESSIONS, SESSION_OVERLAPS, AUTO_SIGNAL_INTERVAL
+from config import SESSIONS, SESSION_OVERLAPS, AUTO_SIGNAL_INTERVAL, CRYPTO_PAIRS
 
 
 def is_weekend() -> bool:
-    """Forex market is closed Saturday and most of Sunday."""
     now = datetime.now(timezone.utc)
-    # weekday(): 5=Saturday, 6=Sunday
-    # Market reopens Sunday 22:00 UTC
     if now.weekday() == 5:
         return True
     if now.weekday() == 6 and now.hour < 22:
@@ -14,20 +11,21 @@ def is_weekend() -> bool:
     return False
 
 
+def is_crypto(pair: str) -> bool:
+    return pair in CRYPTO_PAIRS
+
+
 def get_current_session() -> tuple[str, bool]:
+    """Crypto is always active. Forex checks session hours."""
     if is_weekend():
-        return "Weekend (Market Closed)", False
-
+        return "Weekend — Crypto Only 🟡", True   # still active for crypto
     hour = datetime.now(timezone.utc).hour
-
     for ov in SESSION_OVERLAPS:
         if ov["start"] <= hour < ov["end"]:
             return ov["name"], True
-
     for name, times in SESSIONS.items():
         if times["start"] <= hour < times["end"]:
             return name, True
-
     return "Off-hours", False
 
 
