@@ -219,3 +219,49 @@ def scan_all_pairs(data_map: dict, account_balance: float, crypto_only: bool = F
             logger.warning(f"{pair} error: {e}")
     signals.sort(key=lambda s: s.score, reverse=True)
     return signals
+
+
+def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
+    """
+    Like analyze_pair but forces a signal even with low score.
+    Used to always show best available crypto signals.
+    """
+    try:
+        processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
+    except Exception as e:
+        logger.warning(f"{pair} indicator error: {e}")
+        return None
+
+    o_dir     = overall_direction(tf_data, processed)
+    tf_sigs   = []
+    total_ind = 0
+
+    for tf, df in processed.items():
+        tfs = analyze_tf(df, pair, tf, account_balance, o_dir)
+        tf_sigs.append(tfs)
+        total_ind += tfs.indicators
+
+    agreed   = sum(1 for t in tf_sigs if t.agrees)
+    score    = total_ind
+
+    conf_pct = agreed / len(tf_sigs)
+    if conf_pct >= 0.8:    confidence = "VERY HIGH"
+    elif conf_pct >= 0.6:  confidence = "HIGH"
+    elif conf_pct >= 0.4:  confidence = "MEDIUM"
+    else:                  confidence = "LOW"
+
+    main_tf  = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
+    risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
+
+    return Signal(
+        pair        = pair,
+        direction   = o_dir,
+        entry       = main_tf.entry,
+        score       = score,
+        confidence  = confidence,
+        tfs_agreed  = agreed,
+        total_tfs   = len(tf_sigs),
+        tf_signals  = tf_sigs,
+        asset_type  = "CRYPTO" if is_crypto(pair) else "FOREX",
+        risk_amount = risk_usd,
+    )
