@@ -20,14 +20,13 @@ async def fetch_ohlcv(session: aiohttp.ClientSession, symbol: str,
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             data = await resp.json()
             if data.get("status") == "error" or "values" not in data:
-                logger.debug(f"No data for {symbol} {interval}: {data.get('message','')}")
+                logger.debug(f"No data {symbol} {interval}: {data.get('message','')}")
                 return None
             df = pd.DataFrame(data["values"])
-            df = df.rename(columns={"datetime": "time"})
-            for col in ["open", "high", "low", "close"]:
+            for col in ["open","high","low","close"]:
                 df[col] = pd.to_numeric(df[col])
             df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0)
-            df = df.sort_values("time").reset_index(drop=True)
+            df = df.sort_values("datetime").reset_index(drop=True)
             return df
     except Exception as e:
         logger.warning(f"Fetch error {symbol} {interval}: {e}")
@@ -40,6 +39,7 @@ async def fetch_all_timeframes(symbol: str) -> dict | None:
         for tf in TIMEFRAMES:
             df = await fetch_ohlcv(session, symbol, tf)
             if df is None or len(df) < 50:
+                logger.debug(f"{symbol} {tf}: insufficient data")
                 return None
             results[tf] = df
             await asyncio.sleep(0.3)
