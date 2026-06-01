@@ -1,28 +1,33 @@
 from datetime import datetime, timezone
-from config import SESSIONS, SESSION_OVERLAPS, AUTO_SIGNAL_INTERVAL, CRYPTO_PAIRS
+from config import SESSIONS, AUTO_SIGNAL_INTERVAL
 
 
 def is_weekend() -> bool:
     now = datetime.now(timezone.utc)
-    if now.weekday() == 5: return True
-    if now.weekday() == 6 and now.hour < 22: return True
+    if now.weekday() == 5:                          # Saturday
+        return True
+    if now.weekday() == 6 and now.hour < 22:        # Sunday before 10 PM UTC
+        return True
     return False
 
 
-def is_crypto(pair: str) -> bool:
-    return pair in CRYPTO_PAIRS
-
-
-def get_current_session() -> tuple:
+def get_current_session() -> tuple[str, bool]:
     if is_weekend():
-        return "Weekend — Crypto Active 🟡", True
+        return "Weekend — Crypto Only 🟡", True
+
     hour = datetime.now(timezone.utc).hour
-    for ov in SESSION_OVERLAPS:
-        if ov["start"] <= hour < ov["end"]:
-            return ov["name"], True
+
+    # Overlaps (highest priority)
+    if 7 <= hour < 9:
+        return "Tokyo/London Overlap", True
+    if 12 <= hour < 16:
+        return "London/New York Overlap", True
+
+    # Individual sessions
     for name, times in SESSIONS.items():
         if times["start"] <= hour < times["end"]:
             return name, True
+
     return "Off-hours", False
 
 
