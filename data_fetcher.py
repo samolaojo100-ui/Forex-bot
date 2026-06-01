@@ -29,7 +29,11 @@ async def fetch_ohlcv(session: aiohttp.ClientSession, symbol: str, interval: str
         df = pd.DataFrame(data["values"])
         for col in ["open", "high", "low", "close"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0)
+        # volume is absent on TwelveData free plan for crypto — default to 0
+        if "volume" in df.columns:
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+        else:
+            df["volume"] = 0.0
         df = df.dropna(subset=["open", "high", "low", "close"])
         df = df.sort_values("datetime").reset_index(drop=True)
 
