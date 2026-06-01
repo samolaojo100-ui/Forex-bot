@@ -15,18 +15,18 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def macd(series: pd.Series, fast=12, slow=26, signal=9):
-    e_fast  = ema(series, fast)
-    e_slow  = ema(series, slow)
-    line    = e_fast - e_slow
-    sig     = ema(line, signal)
-    hist    = line - sig
-    return line, sig, hist
+    fast_ema   = ema(series, fast)
+    slow_ema   = ema(series, slow)
+    macd_line  = fast_ema - slow_ema
+    signal_line = ema(macd_line, signal)
+    histogram  = macd_line - signal_line
+    return macd_line, signal_line, histogram
 
 
-def bollinger_bands(series: pd.Series, period=20, std=2.0):
+def bollinger_bands(series: pd.Series, period=20, std_dev=2.0):
     mid   = series.rolling(period).mean()
     sigma = series.rolling(period).std()
-    return mid + std * sigma, mid, mid - std * sigma
+    return mid + std_dev * sigma, mid, mid - std_dev * sigma
 
 
 def stochastic(high, low, close, k_period=14, d_period=3):
@@ -48,20 +48,16 @@ def atr(high, low, close, period=14) -> pd.Series:
 
 
 def adx(high, low, close, period=14):
-    up_move   = high.diff()
-    dn_move   = -low.diff()
-    plus_dm   = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
-    minus_dm  = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
-    atr_val   = atr(high, low, close, period)
-    plus_di   = 100 * pd.Series(plus_dm,  index=high.index).ewm(span=period, adjust=False).mean() / atr_val
-    minus_di  = 100 * pd.Series(minus_dm, index=high.index).ewm(span=period, adjust=False).mean() / atr_val
-    dx        = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)) * 100
-    return dx.ewm(span=period, adjust=False).mean(), plus_di, minus_di
-
-
-def support_resistance(df: pd.DataFrame, lookback=20):
-    recent = df.tail(lookback)
-    return recent["low"].min(), recent["high"].max()
+    up_move  = high.diff()
+    dn_move  = -low.diff()
+    plus_dm  = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+    atr_val  = atr(high, low, close, period)
+    plus_di  = 100 * pd.Series(plus_dm,  index=high.index).ewm(span=period, adjust=False).mean() / atr_val
+    minus_di = 100 * pd.Series(minus_dm, index=high.index).ewm(span=period, adjust=False).mean() / atr_val
+    dx       = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)) * 100
+    adx_line = dx.ewm(span=period, adjust=False).mean()
+    return adx_line, plus_di, minus_di
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
