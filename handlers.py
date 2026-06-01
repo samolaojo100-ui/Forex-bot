@@ -5,113 +5,48 @@ from telegram.ext import (
     CommandHandler, MessageHandler, filters,
 )
 from telegram.constants import ParseMode
+
 from data_fetcher import fetch_multiple_pairs
-from signal_engine import scan_all_pairs, analyze_pair, overall_direction
+from signal_engine import scan_all_pairs, analyze_pair, force_analyze_pair
 from formatter import format_signal, format_no_signal, format_scanning, format_status
 from session_manager import get_current_session, minutes_to_next_scan, is_weekend
 from user_settings import get_balance, set_balance
-from demo import generate_demo_signals, format_demo_signal
-from config import ALL_PAIRS, CRYPTO_PAIRS
-from indicators import compute_indicators
+from config import ALL_PAIRS, CRYPTO_PAIRS, FOREX_PAIRS
 
-logger      = logging.getLogger(__name__)
-MAX_SIGNALS = 5
-ASK_BALANCE = 1
+logger   = logging.getLogger(__name__)
+MAX_SIGS = 5
+ASK_BAL  = 1
 
+
+# ── /start ─────────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id  = update.effective_chat.id
-    balance  = get_balance(chat_id)
+    chat_id = update.effective_chat.id
+    balance = get_balance(chat_id)
     bal_line = f"💰 Balance: *${balance:,.2f}*" if balance else "💰 Balance: _not set — use /setbalance_"
+
     await update.message.reply_text(
         "🤖 *Forex & Crypto Signal Bot*\n\n"
         f"{bal_line}\n\n"
         "📌 *Commands:*\n"
-        "/signal     — full forex + crypto scan\n"
-        "/crypto     — crypto only *(24/7 ✅)*\n"
-        "/demo       — preview signal format\n"
-        "/setbalance — set your balance\n"
-        "/status     — session info\n"
-        "/help       — full guide\n\n"
-        "✅ 47 Forex + 12 Crypto pairs\n"
-        "✅ 5 timeframes · 5 indicators each\n"
-        "✅ Auto-signals every 30 min",
+        "/signal — full forex + crypto scan\n"
+        "/crypto — crypto only *(24/7 ✅)*\n"
+        "/setbalance — set your account balance\n"
+        "/status — session & bot info\n"
+        "/help — full guide\n\n"
+        "✅ Majors + Minors + Exotics + Crypto\n"
+        "✅ 3 timeframes · 5 indicators each\n"
+        "✅ Auto-signals every 30 min during sessions",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
-async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
-    if balance is None:
-        await update.message.reply_text(
-            "⚠️ *No balance set.*\n\nUse /setbalance first.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    scanning_msg = await update.message.reply_text(
-        format_scanning(crypto_only=True), parse_mode=ParseMode.MARKDOWN
-    )
-    try:
-        data_map = await fetch_multiple_pairs(CRYPTO_PAIRS)
-
-        if not data_map:
-            await scanning_msg.edit_text(
-                "❌ Could not fetch market data.\n\nCheck your TwelveData API key in Railway variables.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
-        # Force analyze ALL pairs — return best ones regardless of score
-        all_signals = []
-        for pair, tfs in data_map.items():
-            try:
-                processed = {tf: compute_indicators(df) for tf, df in tfs.items()}
-                from signal_engine import analyze_pair
-                sig = analyze_pair(pair, tfs, balance)
-                if sig:
-                    all_signals.append(sig)
-                else:
-                    # Force a signal even if score is low
-                    from signal_engine import force_analyze_pair
-                    sig = force_analyze_pair(pair, tfs, balance)
-                    if sig:
-                        all_signals.append(sig)
-            except Exception as e:
-                logger.warning(f"{pair} error: {e}")
-
-        all_signals.sort(key=lambda s: s.score, reverse=True)
-        top = all_signals[:3]
-
-        if not top:
-            await scanning_msg.edit_text(
-                "❌ No data returned from API.\n\nYour TwelveData free plan may have hit its daily limit (800 req/day).\n\nTry again tomorrow or check twelvedata.com",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
-        await scanning_msg.delete()
-        header = (
-            f"₿ *Crypto Scan Results*\n"
-            f"Scanned *{len(data_map)}* pairs — top {len(top)} shown\n"
-            f"💰 Balance: `${balance:,.2f}` · Risk: `1%`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        await context.bot.send_message(chat_id, header, parse_mode=ParseMode.MARKDOWN)
-        for i, sig in enumerate(top, 1):
-            await context.bot.send_message(
-                chat_id, format_signal(sig, i, len(top)),
-                parse_mode=ParseMode.MARKDOWN,
-            )
-    except Exception as e:
-        logger.error(f"crypto_command error: {e}", exc_info=True)
-        await scanning_msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
-
+# ── /signal ────────────────────────────────────────────────────────────────────
 
 async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
+
     if balance is None:
         await update.message.reply_text(
             "⚠️ *No balance set.*\n\nUse /setbalance first.",
@@ -122,8 +57,8 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_weekend():
         await update.message.reply_text(
             "📅 *Forex market closed (Weekend)*\n\n"
-            "👉 Use /crypto for live BTC/ETH signals now\n"
-            "📅 Forex resumes *Sunday 10 PM GMT+1*",
+            "👉 Use /crypto for live crypto signals right now.\n"
+            "📅 Forex resumes Sunday 10 PM GMT+1.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -131,57 +66,125 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scanning_msg = await update.message.reply_text(
         format_scanning(), parse_mode=ParseMode.MARKDOWN
     )
+
     try:
         data_map = await fetch_multiple_pairs(ALL_PAIRS)
-        signals  = scan_all_pairs(data_map, account_balance=balance)
+
+        if not data_map:
+            await scanning_msg.edit_text(
+                "❌ *Could not fetch market data.*\n\n"
+                "Check your TwelveData API key in Railway variables.\n"
+                "Free tier limit: 800 req/day.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        signals = scan_all_pairs(data_map, account_balance=balance)
+
         if not signals:
             await scanning_msg.edit_text(format_no_signal(), parse_mode=ParseMode.MARKDOWN)
             return
-        top = signals[:MAX_SIGNALS]
+
+        top = signals[:MAX_SIGS]
         await scanning_msg.delete()
+
         await context.bot.send_message(
             chat_id,
             f"📊 *Market Scan Results*\n"
-            f"Found *{len(signals)}* signal(s) — top {len(top)}\n"
+            f"Found *{len(signals)}* signal(s) — showing top {len(top)}\n"
             f"💰 Balance: `${balance:,.2f}` · Risk: `1%`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode=ParseMode.MARKDOWN,
         )
+
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
                 chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
+
     except Exception as e:
         logger.error(f"signal_command error: {e}", exc_info=True)
         await scanning_msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
 
 
-async def demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ── /crypto ────────────────────────────────────────────────────────────────────
+
+async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    await update.message.reply_text(
-        "🎯 *Demo Mode — Sample Signals*\n\n"
-        "Exact format of live signals.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-    signals = generate_demo_signals()
-    for i, sig in enumerate(signals, 1):
-        await context.bot.send_message(
-            chat_id, format_demo_signal(sig, i, len(signals)),
+    balance = get_balance(chat_id)
+
+    if balance is None:
+        await update.message.reply_text(
+            "⚠️ *No balance set.*\n\nUse /setbalance first.",
             parse_mode=ParseMode.MARKDOWN,
         )
-    await context.bot.send_message(
-        chat_id,
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ *Live signals look exactly like this*\n\n"
-        "₿ /crypto → live signals right now\n"
-        "💱 /signal → forex on weekdays",
-        parse_mode=ParseMode.MARKDOWN,
+        return
+
+    scanning_msg = await update.message.reply_text(
+        format_scanning(crypto_only=True), parse_mode=ParseMode.MARKDOWN
     )
 
+    try:
+        data_map = await fetch_multiple_pairs(CRYPTO_PAIRS)
 
-async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        if not data_map:
+            await scanning_msg.edit_text(
+                "❌ *No crypto data returned.*\n\n"
+                "TwelveData free plan may have hit its daily limit (800 req/day).\n"
+                "Try again later or check twelvedata.com.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        # Try normal threshold first; force-generate if nothing qualifies
+        signals = []
+        for pair, tfs in data_map.items():
+            sig = analyze_pair(pair, tfs, balance)
+            if sig:
+                signals.append(sig)
+
+        if not signals:
+            for pair, tfs in data_map.items():
+                sig = force_analyze_pair(pair, tfs, balance)
+                if sig:
+                    signals.append(sig)
+
+        signals.sort(key=lambda s: s.score, reverse=True)
+        top = signals[:3]
+
+        if not top:
+            await scanning_msg.edit_text(
+                "❌ No signals generated.\n\nCheck your API key.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        await scanning_msg.delete()
+
+        await context.bot.send_message(
+            chat_id,
+            f"₿ *Crypto Scan Results*\n"
+            f"Scanned *{len(data_map)}* pairs — top {len(top)} shown\n"
+            f"💰 Balance: `${balance:,.2f}` · Risk: `1%`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        for i, sig in enumerate(top, 1):
+            await context.bot.send_message(
+                chat_id, format_signal(sig, i, len(top)),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+    except Exception as e:
+        logger.error(f"crypto_command error: {e}", exc_info=True)
+        await scanning_msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
+
+
+# ── /setbalance conversation ────────────────────────────────────────────────────
+
+async def _setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     current = get_balance(chat_id)
     cur_txt = f"\n_Current: ${current:,.2f}_" if current else ""
@@ -191,20 +194,26 @@ async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "_/cancel to keep current_",
         parse_mode=ParseMode.MARKDOWN,
     )
-    return ASK_BALANCE
+    return ASK_BAL
 
 
-async def setbalance_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _setbalance_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
-    text    = update.message.text.strip().replace(",","").replace("$","")
+    text = update.message.text.strip().replace(",", "").replace("$", "")
     try:
         balance = float(text)
     except ValueError:
-        await update.message.reply_text("❌ Numbers only e.g. `20`\n\nTry again:", parse_mode=ParseMode.MARKDOWN)
-        return ASK_BALANCE
+        await update.message.reply_text(
+            "❌ Numbers only e.g. `20`\n\nTry again:", parse_mode=ParseMode.MARKDOWN
+        )
+        return ASK_BAL
+
     if balance < 1:
-        await update.message.reply_text("❌ Minimum $1.\n\nTry again:", parse_mode=ParseMode.MARKDOWN)
-        return ASK_BALANCE
+        await update.message.reply_text(
+            "❌ Minimum $1.\n\nTry again:", parse_mode=ParseMode.MARKDOWN
+        )
+        return ASK_BAL
+
     set_balance(chat_id, balance)
     risk = balance * 0.01
     await update.message.reply_text(
@@ -216,41 +225,46 @@ async def setbalance_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
-async def setbalance_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _setbalance_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("↩️ Cancelled.")
     return ConversationHandler.END
 
 
 def build_setbalance_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("setbalance", setbalance_start)],
-        states={ASK_BALANCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, setbalance_receive)]},
-        fallbacks=[CommandHandler("cancel", setbalance_cancel)],
+        entry_points=[CommandHandler("setbalance", _setbalance_start)],
+        states={ASK_BAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, _setbalance_receive)]},
+        fallbacks=[CommandHandler("cancel", _setbalance_cancel)],
     )
 
+
+# ── /help ──────────────────────────────────────────────────────────────────────
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *Help*\n\n"
-        "• /signal     — full scan (weekdays)\n"
-        "• /crypto     — crypto 24/7\n"
-        "• /demo       — sample signals\n"
-        "• /setbalance — set balance\n"
-        "• /status     — session info\n\n"
-        "*Signal format shows:*\n"
-        "✅ 5 timeframes (5M/15M/1H/4H/Daily)\n"
-        "✅ Per-TF direction, entry, SL, TP, lot\n"
-        "✅ RSI, Stochastic, MACD values\n"
-        "✅ Overall confidence & pair score",
+        "• /signal — full scan (weekdays)\n"
+        "• /crypto — crypto signals 24/7\n"
+        "• /setbalance — set balance for lot sizing\n"
+        "• /status — session info\n\n"
+        "*Each signal shows:*\n"
+        "✅ 3 timeframes (15M / 1H / 4H)\n"
+        "✅ Per-TF direction, entry, SL, TP, lot size\n"
+        "✅ RSI, Stochastic, MACD, ADX values\n"
+        "✅ Overall confidence score (0–10)\n\n"
+        "*Score guide:* 5–6 = ok · 7–8 = good · 9–10 = strong",
         parse_mode=ParseMode.MARKDOWN,
     )
 
+
+# ── /status ────────────────────────────────────────────────────────────────────
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
     session_name, is_active = get_current_session()
     bal_text = f"${balance:,.2f}" if balance else "Not set"
+
     await update.message.reply_text(
         format_status(session_name, is_active, minutes_to_next_scan(), bal_text),
         parse_mode=ParseMode.MARKDOWN,
