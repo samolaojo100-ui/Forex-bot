@@ -24,7 +24,12 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not set.")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(build_setbalance_handler())
     app.add_handler(CommandHandler("start",   start))
