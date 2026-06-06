@@ -16,27 +16,26 @@ logging.basicConfig(
 )
 
 
+async def post_init(app):
+    await start_scheduler(app)
+
+
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set. Add it in Railway → Variables.")
+        raise RuntimeError("BOT_TOKEN is not set.")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # User commands
     app.add_handler(build_setbalance_handler())
     app.add_handler(CommandHandler("start",   start))
     app.add_handler(CommandHandler("signal",  signal_command))
     app.add_handler(CommandHandler("crypto",  crypto_command))
     app.add_handler(CommandHandler("help",    help_command))
     app.add_handler(CommandHandler("status",  status_command))
-
-    # Admin only commands
     app.add_handler(CommandHandler("approve", approve_command))
     app.add_handler(CommandHandler("remove",  remove_command))
     app.add_handler(CommandHandler("ban",     ban_command))
     app.add_handler(CommandHandler("members", members_command))
-
-    app.post_init = start_scheduler
 
     logging.info("🤖 SamSignals Bot starting…")
     app.run_polling(allowed_updates=["message"])
