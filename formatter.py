@@ -1,50 +1,62 @@
 from datetime import datetime, timezone
 
-DIR_EMOJI  = {"BUY": "🟢", "SELL": "🔴"}
+TF_EMOJI = {
+    "5min": "⚡",
+    "15min": "🔸",
+    "1h": "🔵",
+    "4h": "🟣",
+    "1day": "🟡",
+}
+
 CONF_EMOJI = {
-    "VERY HIGH ⭐⭐⭐": "✅",
-    "HIGH ⭐⭐":        "🟢",
-    "MEDIUM ⭐":        "🟡",
-    "LOW":              "🔴",
-}
-TF_LABEL = {
-    "5min":  "5M",
-    "15min": "15M",
-    "1h":    "1H",
-    "4h":    "4H",
-    "1day":  "Daily",
+    "VERY HIGH": "✅",
+    "HIGH": "🟢",
+    "MEDIUM": "🟡",
+    "LOW": "🔴",
 }
 
+DIR_EMOJI = {"BUY": "🟢", "SELL": "🔴"}
 
-def _fmt_tf(tfs) -> str:
-    agree  = "✅" if tfs.agrees else "⬜"
-    label  = TF_LABEL.get(tfs.tf, tfs.tf.upper())
-    confs  = ", ".join(tfs.confirmed) if tfs.confirmed else "None"
-    macd_s = f"{tfs.macd:.5f}" if abs(tfs.macd) < 0.01 else f"{tfs.macd:.4f}"
+
+def fmt_tf_block(tfs, index: int) -> str:
+    """Format one timeframe block."""
+    agrees_emoji = "✅" if tfs.agrees else "⬜"
+    confirmed_str = ", ".join(tfs.confirmed) if tfs.confirmed else "None"
+    label = tfs.tf.upper().replace("1DAY", "Daily").replace("MIN", "M")
+    macd_str = f"{tfs.macd:.5f}" if abs(tfs.macd) < 0.01 else f"{tfs.macd:.2f}"
+
+    # Use getattr for adx so it works even if field is missing (safe fallback)
+    adx_val = getattr(tfs, "adx", None)
+    adx_str = f" | ADX: {adx_val}" if adx_val is not None else ""
+
+    # indicators field: show out of 8 now (was /5)
+    ind_max = 8
+
     return (
-        f"{agree} *{label}* — *{tfs.direction}* | {tfs.indicators}/5 indicators\n"
-        f"   ✔ {confs}\n"
-        f"   Entry `{tfs.entry}` | SL `{tfs.stop_loss}` | TP `{tfs.take_profit}`\n"
-        f"   SL {tfs.sl_pips}p / TP {tfs.tp_pips}p | Lot `{tfs.lot_size}`\n"
-        f"   RSI {tfs.rsi} | Stoch {tfs.stoch} | MACD {macd_s} | ADX {tfs.adx}"
+        f"{agrees_emoji} *{label}* | *{tfs.direction}* | {tfs.indicators}/{ind_max} indicators\n"
+        f"  ✔ {confirmed_str}\n"
+        f"  Entry: `{tfs.entry}` | TP: `{tfs.take_profit}` | SL: `{tfs.stop_loss}`\n"
+        f"  SL {tfs.sl_pips}p / TP {tfs.tp_pips}p | Lot: `{tfs.lot_size}`\n"
+        f"  RSI: {tfs.rsi} | Stoch: {tfs.stoch} | MACD: {macd_str}{adx_str}"
     )
 
 
 def format_signal(sig, index: int = 1, total: int = 1) -> str:
-    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    d_em     = DIR_EMOJI.get(sig.direction, "")
-    c_em     = CONF_EMOJI.get(sig.confidence, "")
-    a_label  = "₿ CRYPTO" if sig.asset_type == "CRYPTO" else "💱 FOREX"
-    tf_text  = "\n\n".join(_fmt_tf(t) for t in sig.tf_signals)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    d_emoji = DIR_EMOJI.get(sig.direction, "")
+    c_emoji = CONF_EMOJI.get(sig.confidence, "")
+    a_label = "₿ CRYPTO" if sig.asset_type == "CRYPTO" else "💱 FOREX"
+
+    tf_blocks = "\n\n".join(fmt_tf_block(t, i) for i, t in enumerate(sig.tf_signals, 1))
 
     return (
-        f"📊 *{sig.pair}* {d_em} *{sig.direction}*\n"
+        f"📊 *{sig.pair}* {d_emoji} *{sig.direction}*\n"
         f"⏰ {now}\n"
-        f"Confidence: {c_em} *{sig.confidence}* — {sig.tfs_agreed}/{sig.total_tfs} TFs agree\n"
-        f"Score: *{sig.score}/10* | {a_label}\n"
+        f"Confidence: {c_emoji} *{sig.confidence}* — {sig.tfs_agreed}/{sig.total_tfs} TFs\n"
+        f"Pair Score: *{sig.score}* | {a_label}\n"
         f"💰 Risk: `${sig.risk_amount}` (1% of balance)\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{tf_text}\n\n"
+        f"{tf_blocks}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 _Signal {index}/{total}_"
     )
@@ -52,19 +64,18 @@ def format_signal(sig, index: int = 1, total: int = 1) -> str:
 
 def format_no_signal() -> str:
     return (
-        "🔍 *Scan Complete — No Signals*\n\n"
-        "Market conditions don't meet the threshold right now.\n"
-        "⏳ Auto-scan retries in 30 min.\n\n"
-        "_Try /crypto for 24/7 crypto signals._"
+        "🔍 *Scan Complete*\n\n"
+        "No qualifying signals right now.\n"
+        "⏳ Auto-scan retries in 30 min."
     )
 
 
 def format_scanning(crypto_only: bool = False) -> str:
-    scope = "crypto pairs" if crypto_only else "forex + crypto pairs"
+    scope = "12 crypto pairs" if crypto_only else "47 forex + 12 crypto"
     return (
         f"🔄 *Scanning {scope}…*\n\n"
-        f"Running {3} timeframes × 5 indicators per pair.\n"
-        f"⏳ Please wait 60–90 seconds…"
+        f"Running 3 timeframes × 9 indicators per pair.\n\n"
+        f"⏳ Please wait 30–60 seconds…"
     )
 
 
@@ -73,8 +84,7 @@ def format_status(session: str, active: bool, mins: int, bal: str) -> str:
     return (
         f"📡 *Bot Status*\n\n"
         f"🕐 *{session}* — {st}\n"
-        f"⏱ Next auto-scan: *{mins} min*\n"
+        f"⏱ Next scan: *{mins} min*\n"
         f"💰 Balance: *{bal}*\n\n"
-        f"₿ /crypto — 24/7 crypto signals\n"
-        f"💱 /signal — forex (weekdays only)"
+        f"₿ Crypto 24/7 · 💱 Forex weekdays"
     )
