@@ -1,511 +1,418 @@
+import pandas as pd
 import numpy as np
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from indicators import compute_indicators
-from config import RISK_PERCENT, CRYPTO_PAIRS, DEFAULT_RR_RATIO, MIN_SIGNAL_SCORE
+from config import RISK_PERCENT, CRYPTO_PAIRS, DEFAULT_RR_RATIO
 
 logger = logging.getLogger(__name__)
-
-# Minimum score threshold raised to 7/10 for accuracy
-MIN_SCORE = 7.0
-
-
-# ── Data classes ───────────────────────────────────────────────────────────────
 
 @dataclass
 class TFSignal:
     tf: str
-    direction: str
+    direction: str  # BUY / SELL
     entry: float
     stop_loss: float
     take_profit: float
     sl_pips: float
     tp_pips: float
     lot_size: float
-    score: float
-    indicators: int
-    confirmed: list
+    indicators: int  # how many confirmed
+    confirmed: list  # names of confirmed indicators
     rsi: float
     stoch: float
     macd: float
     adx: float
-    agrees: bool
-    near_sr: bool        # is price near support/resistance?
-    sr_level: float      # nearest S/R level
-
+    agrees: bool  # agrees with overall direction
 
 @dataclass
 class Signal:
     pair: str
     direction: str
     entry: float
-    stop_loss: float
-    take_profit: float
-    sl_pips: float
-    tp_pips: float
-    lot_size: float
-    score: float
+    score: int
     confidence: str
     tfs_agreed: int
     total_tfs: int
     tf_signals: list
-    support: float
-    resistance: float
     asset_type: str = "FOREX"
     risk_amount: float = 0.0
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
 def is_crypto(pair: str) -> bool:
     return pair in CRYPTO_PAIRS
 
-
 def pip_size(pair: str) -> float:
-    if is_crypto(pair):
-        return 1.0
+    if is_crypto(pair): return 1.0
     return 0.01 if "JPY" in pair else 0.0001
-
 
 def pips(pair: str, a: float, b: float) -> float:
     return round(abs(a - b) / pip_size(pair), 1)
 
-
-def calc_lot(pair: str, sl_pips: float, balance: float) -> float:
-    risk_usd = balance * RISK_PERCENT / 100
+def lot_size(pair: str, sl_pips: float, balance: float) -> float:
+    risk = balance * RISK_PERCENT / 100
     if is_crypto(pair):
-        return round(risk_usd / max(sl_pips, 1), 4)
-    pip_value = 10 if "JPY" not in pair else 9.09
-    return max(0.01, round(risk_usd / (sl_pips * pip_value), 2))
+        return round(risk / max(sl_pips, 1), 4)
+    pv = 10 if "JPY" not in pair else 9.09
+    return max(0.01, round(risk / (sl_pips * pv), 2))
 
 
-def decimal_places(pair: str, close: float) -> int:
-    if is_crypto(pair):
-        return 2 if close > 10 else 5
-    return 3 if "JPY" in pair else 5
+def analyze_tf(df: pd.DataFrame, pair: str, tf: str, balance: float, overall_dir: str) -> TFSignal:
+    row = df.iloc[-1]
+    prev = df.iloc[-2]  # previous candle for confirmation
+    close = row["close"]
+    ps = pip_size(pair)
 
-
-def _safe(val, default=0.0):
-    try:
-        return default if np.isnan(float(val)) else float(val)
-    except Exception:
-        return default
-
-
-# ── Support & Resistance ───────────────────────────────────────────────────────
-
-def get_sr_levels(df, lookback: int = 50):
-    """
-    Find key support and resistance levels using swing highs/lows.
-    Returns (support, resistance, all_levels).
-    """
-    recent = df.tail(lookback)
-    highs  = recent["high"].values
-    lows   = recent["low"].values
-    close  = float(df.iloc[-1]["close"])
-
-    # Swing highs — local maxima
-    resistance_levels = []
-    support_levels    = []
-
-    for i in range(2, len(highs) - 2):
-        if highs[i] > highs[i-1] and highs[i] > highs[i-2] and \
-           highs[i] > highs[i+1] and highs[i] > highs[i+2]:
-            resistance_levels.append(highs[i])
-        if lows[i] < lows[i-1] and lows[i] < lows[i-2] and \
-           lows[i] < lows[i+1] and lows[i] < lows[i+2]:
-            support_levels.append(lows[i])
-
-    # Fallback if no swing points found
-    if not resistance_levels:
-        resistance_levels = [recent["high"].max()]
-    if not support_levels:
-        support_levels = [recent["low"].min()]
-
-    # Nearest support below price, nearest resistance above price
-    supports    = [s for s in support_levels if s < close]
-    resistances = [r for r in resistance_levels if r > close]
-
-    support    = max(supports)    if supports    else recent["low"].min()
-    resistance = min(resistances) if resistances else recent["high"].max()
-
-    return support, resistance
-
-
-def is_near_level(close: float, level: float, pair: str, tolerance_pips: int = 20) -> bool:
-    """Check if price is within tolerance_pips of a key level."""
-    distance = abs(close - level) / pip_size(pair)
-    return distance <= tolerance_pips
-
-
-# ── Trend filter using higher TF ──────────────────────────────────────────────
-
-def get_trend(df) -> str:
-    """
-    Determine trend from the 4H or daily chart using EMA200.
-    Price above EMA200 = uptrend. Below = downtrend.
-    """
-    row   = df.iloc[-1]
-    close = float(row["close"])
-    ema200 = _safe(row["ema200"])
-    ema50  = _safe(row["ema50"])
-    ema21  = _safe(row["ema21"])
-
-    bull_points = sum([
-        close > ema200,
-        close > ema50,
-        ema50  > ema200,
-        ema21  > ema50,
-    ])
-
-    return "BUY" if bull_points >= 3 else "SELL"
-
-
-# ── Per-timeframe scoring ──────────────────────────────────────────────────────
-
-def _score_tf(row, overall_dir: str) -> tuple[float, list]:
-    """
-    Score indicators 0–7 (7 checks instead of 5 for better accuracy).
-    """
-    score     = 0.0
     confirmed = []
+    buy_pts = 0.0
 
-    # 1. EMA full alignment (0–1.5 pts)
-    ema9  = _safe(row["ema9"])
-    ema21 = _safe(row["ema21"])
-    ema50 = _safe(row["ema50"])
-    ema200 = _safe(row["ema200"])
+    # ── 1. EMA TREND (weighted: higher EMAs = stronger trend) ──────────────
+    # All 4 EMAs aligned = strong trend
+    if row["ema9"] > row["ema21"] > row["ema50"] > row["ema200"]:
+        buy_pts += 2.0
+        confirmed.append("EMA Stack ✅")
+    elif row["ema9"] > row["ema21"] > row["ema50"]:
+        buy_pts += 1.5
+        confirmed.append("EMA Trend")
+    elif row["ema9"] > row["ema21"]:
+        buy_pts += 0.5
+    elif row["ema9"] < row["ema21"] < row["ema50"] < row["ema200"]:
+        buy_pts -= 2.0
+    elif row["ema9"] < row["ema21"] < row["ema50"]:
+        buy_pts -= 1.5
+    elif row["ema9"] < row["ema21"]:
+        buy_pts -= 0.5
 
-    if overall_dir == "BUY":
-        if ema9 > ema21 > ema50 > ema200:
-            score += 1.5; confirmed.append("EMA fully aligned ↑")
-        elif ema9 > ema21 > ema50:
-            score += 1.0; confirmed.append("EMA aligned ↑")
-        elif ema9 > ema21:
-            score += 0.5; confirmed.append("EMA partial ↑")
+    # ── 2. EMA200 MACRO FILTER (price above/below = bias) ─────────────────
+    if close > row["ema200"]:
+        buy_pts += 0.5  # macro uptrend bias
+        confirmed.append("Above EMA200")
+    elif close < row["ema200"]:
+        buy_pts -= 0.5
+
+    # ── 3. MACD (line cross + histogram direction) ──────────────────────────
+    macd_cross_up = row["macd"] > row["macd_signal"] and prev["macd"] <= prev["macd_signal"]
+    macd_cross_dn = row["macd"] < row["macd_signal"] and prev["macd"] >= prev["macd_signal"]
+
+    if macd_cross_up:
+        buy_pts += 1.5  # fresh crossover = strong signal
+        confirmed.append("MACD Cross ✅")
+    elif row["macd"] > row["macd_signal"] and row["macd_hist"] > 0:
+        buy_pts += 1.0
+        confirmed.append("MACD Bullish")
+    elif macd_cross_dn:
+        buy_pts -= 1.5
+    elif row["macd"] < row["macd_signal"] and row["macd_hist"] < 0:
+        buy_pts -= 1.0
+
+    # ── 4. RSI (FIXED: proper overbought/oversold + momentum) ──────────────
+    rsi = row["rsi"]
+    rsi_prev = prev["rsi"]
+
+    if rsi < 30:
+        # Oversold — potential BUY reversal
+        buy_pts += 1.5
+        confirmed.append("RSI Oversold")
+    elif rsi > 70:
+        # Overbought — potential SELL reversal
+        buy_pts -= 1.5
+    elif 40 < rsi < 60:
+        # Neutral zone — small directional bias
+        if rsi > 50 and rsi > rsi_prev:
+            buy_pts += 0.5
+            confirmed.append("RSI Rising")
+        elif rsi < 50 and rsi < rsi_prev:
+            buy_pts -= 0.5
+    elif 50 < rsi <= 70:
+        # Bullish momentum zone
+        buy_pts += 0.8
+        confirmed.append("RSI Bullish")
+    elif 30 <= rsi < 50:
+        # Bearish momentum zone
+        buy_pts -= 0.8
+
+    # ── 5. STOCHASTIC (crossover is key, not just position) ─────────────────
+    k = row["stoch_k"]
+    d = row["stoch_d"]
+    k_prev = prev["stoch_k"]
+    d_prev = prev["stoch_d"]
+
+    stoch_cross_up = k > d and k_prev <= d_prev
+    stoch_cross_dn = k < d and k_prev >= d_prev
+
+    if k < 20 and stoch_cross_up:
+        buy_pts += 1.5  # oversold + fresh cross = strong BUY
+        confirmed.append("Stoch Oversold Cross ✅")
+    elif k > 80 and stoch_cross_dn:
+        buy_pts -= 1.5  # overbought + fresh cross = strong SELL
+    elif stoch_cross_up:
+        buy_pts += 0.8
+        confirmed.append("Stoch Cross")
+    elif stoch_cross_dn:
+        buy_pts -= 0.8
+    elif k > d:
+        buy_pts += 0.3
     else:
-        if ema9 < ema21 < ema50 < ema200:
-            score += 1.5; confirmed.append("EMA fully aligned ↓")
-        elif ema9 < ema21 < ema50:
-            score += 1.0; confirmed.append("EMA aligned ↓")
-        elif ema9 < ema21:
-            score += 0.5; confirmed.append("EMA partial ↓")
+        buy_pts -= 0.3
 
-    # 2. MACD (0–1 pt) — must have crossover AND histogram agreement
-    macd_val  = _safe(row["macd"])
-    macd_sig  = _safe(row["macd_signal"])
-    macd_hist = _safe(row["macd_hist"])
-    if overall_dir == "BUY":
-        if macd_val > macd_sig and macd_hist > 0 and macd_val < 0:
-            # Crossover below zero = strongest buy signal
-            score += 1.0; confirmed.append("MACD crossover bullish")
-        elif macd_val > macd_sig and macd_hist > 0:
-            score += 0.7; confirmed.append("MACD bullish")
-        elif macd_hist > 0:
-            score += 0.3
+    # ── 6. BOLLINGER BANDS (FIXED: proper logic) ────────────────────────────
+    bb_upper = row["bb_upper"]
+    bb_mid = row["bb_mid"]
+    bb_lower = row["bb_lower"]
+
+    if close <= bb_lower:
+        buy_pts += 1.5  # price at lower band = potential BUY
+        confirmed.append("BB Lower Bounce")
+    elif close >= bb_upper:
+        buy_pts -= 1.5  # price at upper band = potential SELL
+    elif close > bb_mid:
+        buy_pts += 0.5  # price above mid = bullish
+        confirmed.append("BB Above Mid")
     else:
-        if macd_val < macd_sig and macd_hist < 0 and macd_val > 0:
-            score += 1.0; confirmed.append("MACD crossover bearish")
-        elif macd_val < macd_sig and macd_hist < 0:
-            score += 0.7; confirmed.append("MACD bearish")
-        elif macd_hist < 0:
-            score += 0.3
+        buy_pts -= 0.3  # price below mid = slightly bearish
 
-    # 3. RSI — zone based scoring (0–1.5 pts)
-    rsi_val = _safe(row["rsi"], 50)
-    if overall_dir == "BUY":
-        if 45 < rsi_val < 60:
-            # Sweet spot — bullish momentum without being overbought
-            score += 1.5; confirmed.append(f"RSI {rsi_val:.0f} ideal")
-        elif 60 <= rsi_val < 70:
-            score += 0.8; confirmed.append(f"RSI {rsi_val:.0f} bullish")
-        elif rsi_val >= 50:
-            score += 0.4
-        elif rsi_val < 35:
-            # Oversold bounce opportunity
-            score += 1.0; confirmed.append(f"RSI {rsi_val:.0f} oversold bounce")
+    # ── 7. ADX (NOW USED: trend strength filter) ────────────────────────────
+    adx_val = row["adx"]
+    plus_di = row["plus_di"]
+    minus_di = row["minus_di"]
+
+    if adx_val > 25:
+        # Strong trend — DI direction is reliable
+        if plus_di > minus_di:
+            buy_pts += 1.5
+            confirmed.append(f"ADX Strong Bull ({adx_val:.0f})")
+        else:
+            buy_pts -= 1.5
+    elif adx_val > 20:
+        if plus_di > minus_di:
+            buy_pts += 0.8
+            confirmed.append(f"ADX Bull ({adx_val:.0f})")
+        else:
+            buy_pts -= 0.8
+    # ADX < 20 = ranging market, don't score — avoids choppy false signals
+
+    # ── 8. VOLUME CONFIRMATION (NOW USED) ───────────────────────────────────
+    vol_ratio = row.get("vol_ratio", 1.0)
+    if pd.notna(vol_ratio):
+        if vol_ratio >= 1.5:
+            # Volume spike confirms the move
+            buy_pts += 1.0 if buy_pts > 0 else -1.0
+            confirmed.append(f"Vol Spike {vol_ratio:.1f}x")
+        elif vol_ratio < 0.7:
+            # Low volume = weak signal, reduce confidence
+            buy_pts *= 0.8
+
+    # ── 9. CANDLE CONFIRMATION (new) ────────────────────────────────────────
+    candle_body = row["close"] - row["open"]
+    candle_range = row["high"] - row["low"]
+    if candle_range > 0:
+        body_ratio = abs(candle_body) / candle_range
+        if body_ratio > 0.6:  # strong candle (60%+ body)
+            if candle_body > 0:
+                buy_pts += 0.5
+                confirmed.append("Strong Bull Candle")
+            else:
+                buy_pts -= 0.5
+
+    # ── DETERMINE DIRECTION ──────────────────────────────────────────────────
+    direction = "BUY" if buy_pts > 0 else "SELL"
+    ind_score = min(len(confirmed), 8)  # max 8 confirmations now
+
+    # ── SL/TP CALCULATION ───────────────────────────────────────────────────
+    atr = row["atr"]
+    min_sl = close * 0.003 if is_crypto(pair) else (0.0010 if "JPY" not in pair else 0.10)
+
+    if direction == "BUY":
+        sl = close - max(1.5 * atr, min_sl)  # slightly wider: 1.5x ATR
+        tp = close + max(1.5 * atr, min_sl) * DEFAULT_RR_RATIO
     else:
-        if 40 < rsi_val < 55:
-            score += 1.5; confirmed.append(f"RSI {rsi_val:.0f} ideal")
-        elif 30 <= rsi_val < 40:
-            score += 0.8; confirmed.append(f"RSI {rsi_val:.0f} bearish")
-        elif rsi_val <= 50:
-            score += 0.4
-        elif rsi_val > 65:
-            # Overbought reversal opportunity
-            score += 1.0; confirmed.append(f"RSI {rsi_val:.0f} overbought reversal")
-
-    # 4. Stochastic (0–1 pt) — must be crossing not extreme
-    k = _safe(row["stoch_k"], 50)
-    d = _safe(row["stoch_d"], 50)
-    if overall_dir == "BUY":
-        if k > d and 20 < k < 50:
-            # Crossing up from oversold = strongest
-            score += 1.0; confirmed.append(f"Stoch {k:.0f} crossing up")
-        elif k > d and k < 80:
-            score += 0.6; confirmed.append(f"Stoch {k:.0f} bullish")
-        elif k > d:
-            score += 0.3
-    else:
-        if k < d and 50 < k < 80:
-            score += 1.0; confirmed.append(f"Stoch {k:.0f} crossing down")
-        elif k < d and k > 20:
-            score += 0.6; confirmed.append(f"Stoch {k:.0f} bearish")
-        elif k < d:
-            score += 0.3
-
-    # 5. ADX — trend strength (0–1 pt)
-    adx_val  = _safe(row["adx"])
-    plus_di  = _safe(row["plus_di"])
-    minus_di = _safe(row["minus_di"])
-    di_agree = (overall_dir == "BUY" and plus_di > minus_di) or \
-               (overall_dir == "SELL" and minus_di > plus_di)
-
-    if adx_val >= 30 and di_agree:
-        score += 1.0; confirmed.append(f"ADX {adx_val:.0f} strong trend")
-    elif adx_val >= 25 and di_agree:
-        score += 0.7; confirmed.append(f"ADX {adx_val:.0f} trending")
-    elif adx_val >= 20:
-        score += 0.3
-
-    # 6. Bollinger Band position (0–1 pt)
-    close    = _safe(row["close"])
-    bb_upper = _safe(row["bb_upper"])
-    bb_lower = _safe(row["bb_lower"])
-    bb_mid   = _safe(row["bb_mid"])
-    if overall_dir == "BUY":
-        if close > bb_mid and close < bb_upper:
-            score += 1.0; confirmed.append("Price above BB mid")
-        elif close <= bb_lower:
-            score += 0.8; confirmed.append("Price at BB lower (bounce)")
-    else:
-        if close < bb_mid and close > bb_lower:
-            score += 1.0; confirmed.append("Price below BB mid")
-        elif close >= bb_upper:
-            score += 0.8; confirmed.append("Price at BB upper (reversal)")
-
-    return score, confirmed
-
-
-# ── Overall direction ──────────────────────────────────────────────────────────
-
-def overall_direction(processed: dict) -> str:
-    """
-    Weighted vote — higher TFs (4H) get more weight than lower (15min).
-    """
-    weights = {"15min": 1, "1h": 2, "4h": 3, "1day": 4}
-    buy_weight  = 0.0
-    total_weight = 0.0
-
-    for tf, df in processed.items():
-        w   = weights.get(tf, 1)
-        row = df.iloc[-1]
-        votes = sum([
-            float(row["ema9"])     > float(row["ema21"]),
-            float(row["macd"])     > float(row["macd_signal"]),
-            _safe(row["rsi"], 50)  > 50,
-            _safe(row["stoch_k"])  > _safe(row["stoch_d"]),
-            _safe(row["plus_di"])  > _safe(row["minus_di"]),
-            _safe(row["close"])    > _safe(row["ema200"]),  # price above EMA200
-        ])
-        if votes >= 4:   # stricter: need 4/6 to be bullish
-            buy_weight += w
-        total_weight += w
-
-    return "BUY" if buy_weight >= total_weight / 2 else "SELL"
-
-
-# ── Per-TF analysis ────────────────────────────────────────────────────────────
-
-def analyze_tf(df, pair: str, tf: str, balance: float, o_dir: str,
-               support: float, resistance: float) -> TFSignal:
-    row   = df.iloc[-1]
-    close = float(row["close"])
-    dec   = decimal_places(pair, close)
-
-    score, confirmed = _score_tf(row, o_dir)
-
-    # Check if near S/R
-    near_support    = is_near_level(close, support, pair, 25)
-    near_resistance = is_near_level(close, resistance, pair, 25)
-    near_sr = near_support or near_resistance
-
-    # Bonus point for being near key S/R level
-    if near_sr:
-        if o_dir == "BUY" and near_support:
-            score += 0.5; confirmed.append("Near support ✅")
-        elif o_dir == "SELL" and near_resistance:
-            score += 0.5; confirmed.append("Near resistance ✅")
-
-    sr_level = support if (o_dir == "BUY") else resistance
-
-    # Direction vote for this TF
-    votes = sum([
-        float(row["ema9"])     > float(row["ema21"]),
-        float(row["macd"])     > float(row["macd_signal"]),
-        _safe(row["rsi"], 50)  > 50,
-        _safe(row["stoch_k"])  > _safe(row["stoch_d"]),
-        _safe(row["plus_di"])  > _safe(row["minus_di"]),
-        close                  > _safe(row["ema200"]),
-    ])
-    tf_dir = "BUY" if votes >= 4 else "SELL"
-
-    # SL/TP from ATR — tighter multiplier for better RR
-    atr_val = _safe(row["atr"], close * 0.001)
-    min_sl  = close * 0.003 if is_crypto(pair) else (0.002 if "JPY" not in pair else 0.2)
-    sl_dist = max(1.2 * atr_val, min_sl)  # tighter than before (was 1.5)
-
-    if tf_dir == "BUY":
-        # SL below nearest support for accuracy
-        sl = min(close - sl_dist, support - pip_size(pair) * 5) if near_support else close - sl_dist
-        tp = close + sl_dist * DEFAULT_RR_RATIO
-    else:
-        sl = max(close + sl_dist, resistance + pip_size(pair) * 5) if near_resistance else close + sl_dist
-        tp = close - sl_dist * DEFAULT_RR_RATIO
+        sl = close + max(1.5 * atr, min_sl)
+        tp = close - max(1.5 * atr, min_sl) * DEFAULT_RR_RATIO
 
     sl_p = pips(pair, close, sl)
     tp_p = pips(pair, close, tp)
-    lot  = calc_lot(pair, max(sl_p, 0.1), balance)
+    lot = lot_size(pair, max(sl_p, 0.1), balance)
+
+    dec = 2 if is_crypto(pair) and close > 10 else 5
 
     return TFSignal(
         tf=tf,
-        direction=tf_dir,
+        direction=direction,
         entry=round(close, dec),
         stop_loss=round(sl, dec),
         take_profit=round(tp, dec),
-        sl_pips=round(sl_p, 1),
-        tp_pips=round(tp_p, 1),
+        sl_pips=sl_p,
+        tp_pips=tp_p,
         lot_size=lot,
-        score=round(score, 2),
-        indicators=len(confirmed),
+        indicators=ind_score,
         confirmed=confirmed,
-        rsi=round(_safe(row["rsi"], 50), 1),
-        stoch=round(k := _safe(row["stoch_k"]), 1),
-        macd=round(float(row["macd"]), 6),
-        adx=round(_safe(row["adx"]), 1),
-        agrees=(tf_dir == o_dir),
-        near_sr=near_sr,
-        sr_level=round(sr_level, dec),
+        rsi=round(rsi, 2),
+        stoch=round(k, 2),
+        macd=round(row["macd"], 6),
+        adx=round(adx_val, 1),
+        agrees=direction == overall_dir,
     )
 
 
-# ── Build signal ───────────────────────────────────────────────────────────────
+def overall_direction(tf_data: dict, processed: dict) -> str:
+    """
+    Determine overall bias using weighted timeframe voting.
+    Higher timeframes (4h) carry more weight than lower (15min).
+    """
+    TF_WEIGHTS = {"15min": 1, "15m": 1, "1h": 2, "4h": 3}
+    buy_weight = 0
+    total_weight = 0
 
-def _build_signal(pair: str, processed: dict, tf_sigs: list,
-                  balance: float, support: float, resistance: float) -> Signal | None:
-    if not tf_sigs:
+    for tf, df in processed.items():
+        row = df.iloc[-1]
+        prev = df.iloc[-2]
+        weight = TF_WEIGHTS.get(tf, 1)
+        total_weight += weight
+
+        pts = 0
+
+        # EMA alignment
+        if row["ema9"] > row["ema21"] > row["ema50"]: pts += 1
+        elif row["ema9"] < row["ema21"] < row["ema50"]: pts -= 1
+
+        # MACD
+        if row["macd"] > row["macd_signal"]: pts += 1
+        else: pts -= 1
+
+        # RSI (FIXED: > 50 = bullish)
+        if row["rsi"] > 50: pts += 1
+        else: pts -= 1
+
+        # Stochastic
+        if row["stoch_k"] > row["stoch_d"]: pts += 1
+        else: pts -= 1
+
+        # ADX DI direction
+        if row["plus_di"] > row["minus_di"]: pts += 1
+        else: pts -= 1
+
+        # Price vs EMA200 (macro bias)
+        if row["close"] > row["ema200"]: pts += 1
+        else: pts -= 1
+
+        if pts > 0:
+            buy_weight += weight
+
+    return "BUY" if buy_weight > total_weight / 2 else "SELL"
+
+
+def analyze_pair(pair: str, tf_data: dict, account_balance: float):
+    try:
+        processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
+    except Exception as e:
+        logger.warning(f"{pair} indicator error: {e}")
         return None
 
-    agreed     = sum(1 for t in tf_sigs if t.agrees)
-    raw_score  = sum(t.score for t in tf_sigs)
-    max_score  = len(tf_sigs) * 7.5   # max per TF is now ~7.5
-    normalised = round((raw_score / max_score) * 10, 1) if max_score > 0 else 0.0
+    o_dir = overall_direction(tf_data, processed)
+
+    tf_sigs = []
+    total_ind = 0
+
+    for tf, df in processed.items():
+        tfs = analyze_tf(df, pair, tf, account_balance, o_dir)
+        tf_sigs.append(tfs)
+        total_ind += tfs.indicators
+
+    agreed = sum(1 for t in tf_sigs if t.agrees)
+
+    # STRICTER: all 3 TFs must agree for a valid signal
+    if agreed < len(tf_sigs):
+        return None
+
+    # ADX filter: at least one TF must show a trending market
+    max_adx = max(t.adx for t in tf_sigs)
+    if max_adx < 18:
+        return None  # avoid ranging/choppy markets entirely
+
+    score = total_ind
+
+    if score < 6:
+        return None
 
     conf_pct = agreed / len(tf_sigs)
-    if conf_pct >= 0.9:   confidence = "VERY HIGH ⭐⭐⭐"
-    elif conf_pct >= 0.7: confidence = "HIGH ⭐⭐"
-    elif conf_pct >= 0.5: confidence = "MEDIUM ⭐"
-    else:                 confidence = "LOW"
+    if conf_pct >= 0.8: confidence = "VERY HIGH"
+    elif conf_pct >= 0.6: confidence = "HIGH"
+    elif conf_pct >= 0.4: confidence = "MEDIUM"
+    else: confidence = "LOW"
 
-    main = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
-    o_dir = overall_direction(processed)
+    main_tf = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
+    risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
 
     return Signal(
         pair=pair,
         direction=o_dir,
-        entry=main.entry,
-        stop_loss=main.stop_loss,
-        take_profit=main.take_profit,
-        sl_pips=main.sl_pips,
-        tp_pips=main.tp_pips,
-        lot_size=main.lot_size,
-        score=normalised,
+        entry=main_tf.entry,
+        score=score,
         confidence=confidence,
         tfs_agreed=agreed,
         total_tfs=len(tf_sigs),
         tf_signals=tf_sigs,
-        support=round(support, 5),
-        resistance=round(resistance, 5),
         asset_type="CRYPTO" if is_crypto(pair) else "FOREX",
-        risk_amount=round(balance * RISK_PERCENT / 100, 2),
+        risk_amount=risk_usd,
     )
-
-
-# ── Main analysis ──────────────────────────────────────────────────────────────
-
-def analyze_pair(pair: str, tf_data: dict, balance: float) -> Signal | None:
-    try:
-        processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
-    except Exception as e:
-        logger.warning(f"{pair} indicator error: {e}")
-        return None
-
-    o_dir = overall_direction(processed)
-
-    # Get S/R from the 1H chart (best balance of detail vs noise)
-    ref_df = processed.get("1h", list(processed.values())[0])
-    support, resistance = get_sr_levels(ref_df)
-
-    # Trend filter — 4H must agree with direction
-    high_tf = processed.get("4h", list(processed.values())[-1])
-    trend   = get_trend(high_tf)
-    if trend != o_dir:
-        logger.info(f"{pair}: skipped — 4H trend ({trend}) disagrees with signal ({o_dir})")
-        return None
-
-    tf_sigs = []
-    for tf, df in processed.items():
-        try:
-            tf_sigs.append(analyze_tf(df, pair, tf, balance, o_dir, support, resistance))
-        except Exception as e:
-            logger.warning(f"{pair} {tf} error: {e}")
-
-    sig = _build_signal(pair, processed, tf_sigs, balance, support, resistance)
-    if sig is None:
-        return None
-
-    # Strict filters for accuracy
-    agreed = sum(1 for t in tf_sigs if t.agrees)
-    if sig.score < MIN_SCORE:
-        return None
-    if agreed < len(tf_sigs):   # ALL timeframes must agree
-        return None
-
-    return sig
-
-
-def force_analyze_pair(pair: str, tf_data: dict, balance: float) -> Signal | None:
-    """Skip score threshold — used for crypto forced signals."""
-    try:
-        processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
-    except Exception as e:
-        logger.warning(f"{pair} indicator error: {e}")
-        return None
-
-    o_dir = overall_direction(processed)
-    ref_df = processed.get("1h", list(processed.values())[0])
-    support, resistance = get_sr_levels(ref_df)
-
-    tf_sigs = []
-    for tf, df in processed.items():
-        try:
-            tf_sigs.append(analyze_tf(df, pair, tf, balance, o_dir, support, resistance))
-        except Exception as e:
-            logger.warning(f"{pair} {tf} error: {e}")
-
-    return _build_signal(pair, processed, tf_sigs, balance, support, resistance)
 
 
 def scan_all_pairs(data_map: dict, account_balance: float, crypto_only: bool = False) -> list:
     signals = []
     for pair, tfs in data_map.items():
-        if crypto_only and not is_crypto(pair):
-            continue
+        if crypto_only and not is_crypto(pair): continue
         try:
             sig = analyze_pair(pair, tfs, account_balance)
-            if sig:
-                signals.append(sig)
+            if sig: signals.append(sig)
         except Exception as e:
-            logger.warning(f"{pair} scan error: {e}")
+            logger.warning(f"{pair} error: {e}")
+
     signals.sort(key=lambda s: s.score, reverse=True)
     return signals
+
+
+def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
+    """
+    Like analyze_pair but forces a signal even with low score.
+    Used to always show best available crypto signals.
+    """
+    try:
+        processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
+    except Exception as e:
+        logger.warning(f"{pair} indicator error: {e}")
+        return None
+
+    o_dir = overall_direction(tf_data, processed)
+
+    tf_sigs = []
+    total_ind = 0
+
+    for tf, df in processed.items():
+        tfs = analyze_tf(df, pair, tf, account_balance, o_dir)
+        tf_sigs.append(tfs)
+        total_ind += tfs.indicators
+
+    agreed = sum(1 for t in tf_sigs if t.agrees)
+    score = total_ind
+
+    conf_pct = agreed / len(tf_sigs)
+    if conf_pct >= 0.8: confidence = "VERY HIGH"
+    elif conf_pct >= 0.6: confidence = "HIGH"
+    elif conf_pct >= 0.4: confidence = "MEDIUM"
+    else: confidence = "LOW"
+
+    main_tf = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
+    risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
+
+    return Signal(
+        pair=pair,
+        direction=o_dir,
+        entry=main_tf.entry,
+        score=score,
+        confidence=confidence,
+        tfs_agreed=agreed,
+        total_tfs=len(tf_sigs),
+        tf_signals=tf_sigs,
+        asset_type="CRYPTO" if is_crypto(pair) else "FOREX",
+        risk_amount=risk_usd,
+    )
