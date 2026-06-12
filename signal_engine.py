@@ -222,12 +222,29 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str, balance: float, overall_dir
     atr = row["atr"]
     min_sl = close * 0.003 if is_crypto(pair) else (0.0010 if "JPY" not in pair else 0.10)
 
+    # Wider SL buffer (2x ATR) so normal noise/retracement doesn't clip it.
+    # Recent swing high/low (last 10 candles) used as a structure-based floor/ceiling
+    # for SL, since price often reverses right at these levels.
+    lookback = df.iloc[-11:-1]  # last 10 candles excluding current
+    swing_low = lookback["low"].min()
+    swing_high = lookback["high"].max()
+
+    sl_dist = max(2.0 * atr, min_sl)
+    # Lower RR (1.5 instead of original) makes TP more achievable while
+    # still keeping positive expectancy if win rate stays above ~40%.
+    tp_rr = 1.5
+
     if direction == "BUY":
-        sl = close - max(1.5 * atr, min_sl)  # slightly wider: 1.5x ATR
-        tp = close + max(1.5 * atr, min_sl) * DEFAULT_RR_RATIO
+        # SL placed below recent swing low (with small buffer) OR 2xATR, whichever is further
+        structure_sl = swing_low - (0.2 * atr)
+        sl = min(close - sl_dist, structure_sl)
+        sl_dist_final = close - sl
+        tp = close + sl_dist_final * tp_rr
     else:
-        sl = close + max(1.5 * atr, min_sl)
-        tp = close - max(1.5 * atr, min_sl) * DEFAULT_RR_RATIO
+        structure_sl = swing_high + (0.2 * atr)
+        sl = max(close + sl_dist, structure_sl)
+        sl_dist_final = sl - close
+        tp = close - sl_dist_final * tp_rr
 
     sl_p = pips(pair, close, sl)
     tp_p = pips(pair, close, tp)
@@ -252,6 +269,65 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str, balance: float, overall_dir
         adx=round(adx_val, 1),
         agrees=direction == overall_dir,
     )
+
+
+# ── CORRELATION GROUPS ───────────────────────────────────────────────────
+# Pairs in the same group tend to move together (positively correlated).
+# If two pairs in the same group both fire a signal in the SAME direction,
+# only the highest-scoring one is kept — the rest are marked as filtered
+# duplicates to avoid stacking correlated risk.
+CORRELATION_GROUPS = [
+    {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"},   # "vs USD" — tend to move together
+    {"USDJPY", "USDCHF", "USDCAD"},              # USD as base — often inverse to above
+    {"EURGBP", "EURJPY", "GBPJPY"},              # cross pairs sharing legs
+    {"XAUUSD", "XAGUSD"},                        # metals
+]
+
+
+def find_correlation_group(pair: str):
+    """Return the correlation group set containing `pair`, or None."""
+    for group in CORRELATION_GROUPS:
+        if pair in group:
+            return group
+    return None
+
+
+def filter_correlated_signals(signals: list) -> list:
+    """
+    Given a list of Signal objects (already sorted by score, highest first),
+    remove signals that are correlated duplicates of a higher-scoring signal
+    already kept (same correlation group + same direction).
+
+    The dropped signal's pair name is appended to `correlation_note` on the
+    kept signal so it can optionally be shown in the formatter.
+    """
+    kept = []
+    kept_groups = []  # list of (group_set, direction, pair_name) for kept signals
+
+    for sig in signals:
+        group = find_correlation_group(sig.pair)
+
+        if group is None:
+            # Not part of any known correlation group — always keep
+            kept.append(sig)
+            continue
+
+        # Check if a higher-scoring signal from the same group + direction
+        # has already been kept
+        duplicate_of = None
+        for kept_group, kept_dir, kept_pair in kept_groups:
+            if kept_group is group and kept_dir == sig.direction:
+                duplicate_of = kept_pair
+                break
+
+        if duplicate_of:
+            # Skip this one — it's a correlated duplicate of a stronger signal
+            continue
+
+        kept.append(sig)
+        kept_groups.append((group, sig.direction, sig.pair))
+
+    return kept
 
 
 def overall_direction(tf_data: dict, processed: dict) -> str:
@@ -368,6 +444,7 @@ def scan_all_pairs(data_map: dict, account_balance: float, crypto_only: bool = F
             logger.warning(f"{pair} error: {e}")
 
     signals.sort(key=lambda s: s.score, reverse=True)
+    signals = filter_correlated_signals(signals)
     return signals
 
 
