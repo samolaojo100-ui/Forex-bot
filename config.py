@@ -52,9 +52,10 @@ MINOR_PAIRS_FULL = [
 EXOTIC_PAIRS_FULL = [
     "USD/MXN", "USD/ZAR", "USD/SGD", "USD/NOK",
 ]
-CRYPTO_PAIRS_FULL = [
-    "BTC/USD", "ETH/USD", "BNB/USD", "SOL/USD",
-    "XRP/USD", "ADA/USD", "DOGE/USD", "LTC/USD",
+CRYPTO_PAIRS = [
+    "BTC/USD","ETH/USD","BNB/USD","SOL/USD",
+    "XRP/USD","ADA/USD","AVAX/USD","DOGE/USD",
+    "MATIC/USD","DOT/USD","LTC/USD","LINK/USD","XAU/USD",
 ]
 
 # ── Sessions ───────────────────────────────────────────────────────────────────
