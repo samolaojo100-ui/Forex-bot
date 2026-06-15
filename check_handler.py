@@ -65,17 +65,30 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw = context.args[0]
-    pair = raw.upper().replace("/", "").replace(" ", "").strip()
+    # Normalize user input: uppercase, strip spaces (keep as-is otherwise)
+    user_input = raw.upper().replace(" ", "").strip()
+    # Also build a no-slash version for comparison
+    user_no_slash = user_input.replace("/", "")
 
     all_known = set(ALL_PAIRS) | set(CRYPTO_PAIRS)
-    if pair not in all_known:
-        suggestions = [p for p in all_known if pair in p or p in pair]
+
+    # Try to find a match: exact match, or match after removing slashes
+    # from the config pair (since config.py stores pairs like "XAU/USD"
+    # but users naturally type "XAUUSD")
+    pair = None
+    for p in all_known:
+        if p == user_input or p.replace("/", "") == user_no_slash:
+            pair = p
+            break
+
+    if pair is None:
+        suggestions = [p for p in all_known if user_no_slash in p.replace("/", "") or p.replace("/", "") in user_no_slash]
         suggestion_text = ""
         if suggestions:
             suggestion_text = "\n\nDid you mean: " + ", ".join(f"`{s}`" for s in suggestions[:5])
 
         await update.message.reply_text(
-            f"❌ *Unknown pair:* `{pair}`\n\n"
+            f"❌ *Unknown pair:* `{raw.upper()}`\n\n"
             f"It's not in the bot's tracked pair list.{suggestion_text}",
             parse_mode=ParseMode.MARKDOWN,
         )
