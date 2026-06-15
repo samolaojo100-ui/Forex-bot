@@ -333,9 +333,16 @@ def filter_correlated_signals(signals: list) -> list:
 def overall_direction(tf_data: dict, processed: dict) -> str:
     """
     Determine overall bias using weighted timeframe voting.
-    Higher timeframes (4h) carry more weight than lower (15min).
+    Higher timeframes carry more weight than lower ones.
     """
-    TF_WEIGHTS = {"15min": 1, "15m": 1, "1h": 2, "4h": 3}
+    TF_WEIGHTS = {
+        "15min": 1, "15m": 1,
+        "30min": 1, "30m": 1,
+        "45min": 1, "45m": 1,
+        "1h": 2,
+        "2h": 2,
+        "4h": 3,
+    }
     buy_weight = 0
     total_weight = 0
 
@@ -377,6 +384,20 @@ def overall_direction(tf_data: dict, processed: dict) -> str:
     return "BUY" if buy_weight > total_weight / 2 else "SELL"
 
 
+def _select_main_tf(tf_sigs: list):
+    """
+    Pick the 'main' timeframe signal to use for entry price display.
+    Prefers 1h, then 2h, then 4h, then falls back to the first available
+    — works regardless of which/how many timeframes were scanned.
+    """
+    priority = ["1h", "1hour", "60min", "60m", "2h", "4h"]
+    for tf_name in priority:
+        match = next((t for t in tf_sigs if t.tf == tf_name), None)
+        if match:
+            return match
+    return tf_sigs[0]
+
+
 def analyze_pair(pair: str, tf_data: dict, account_balance: float):
     try:
         processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
@@ -396,9 +417,34 @@ def analyze_pair(pair: str, tf_data: dict, account_balance: float):
 
     agreed = sum(1 for t in tf_sigs if t.agrees)
 
-    # STRICTER: all 3 TFs must agree for a valid signal
-    if agreed < len(tf_sigs):
+    # At least 3 timeframes must agree with the overall direction for a
+    # valid signal (relaxed from "all must agree" now that there are up
+    # to 6 timeframes — requiring all 6 would be too strict).
+    MIN_AGREEING_TFS = 3
+    if agreed < MIN_AGREEING_TFS:
         return None
+
+    # ── STABILITY CHECK ──────────────────────────────────────────────
+    # Problem this fixes: borderline signals where the overall direction
+    # is decided by a narrow majority can flip to the OPPOSITE direction
+    # moments later from tiny indicator shifts (e.g. RSI crossing 50,
+    # MACD histogram flipping sign) — causing the bot to send BUY, then
+    # SELL on the same pair within minutes.
+    #
+    # Fix: require the LONGEST available timeframe (most weight, slowest
+    # to change, least noisy) to individually agree with the overall
+    # direction. If the "anchor" timeframe disagrees, the overall
+    # direction is being decided by faster/noisier timeframes alone —
+    # exactly the kind of signal likely to flip soon. Reject it.
+    TF_PRIORITY_FOR_ANCHOR = ["4h", "2h", "1h", "45min", "45m", "30min", "30m", "15min", "15m"]
+    anchor_tf = None
+    for tf_name in TF_PRIORITY_FOR_ANCHOR:
+        anchor_tf = next((t for t in tf_sigs if t.tf == tf_name), None)
+        if anchor_tf:
+            break
+
+    if anchor_tf and not anchor_tf.agrees:
+        return None  # anchor (longest) timeframe disagrees -> unstable, skip
 
     # ADX filter: at least one TF must show a trending market
     max_adx = max(t.adx for t in tf_sigs)
@@ -407,7 +453,9 @@ def analyze_pair(pair: str, tf_data: dict, account_balance: float):
 
     score = total_ind
 
-    if score < 6:
+    # Raised from 6 to 7 — combined with the stability check above, this
+    # reduces the frequency of borderline/contradictory signals.
+    if score < 7:
         return None
 
     conf_pct = agreed / len(tf_sigs)
@@ -416,7 +464,7 @@ def analyze_pair(pair: str, tf_data: dict, account_balance: float):
     elif conf_pct >= 0.4: confidence = "MEDIUM"
     else: confidence = "LOW"
 
-    main_tf = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
+    main_tf = _select_main_tf(tf_sigs)
     risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
 
     return Signal(
@@ -478,7 +526,7 @@ def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
     elif conf_pct >= 0.4: confidence = "MEDIUM"
     else: confidence = "LOW"
 
-    main_tf = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
+    main_tf = _select_main_tf(tf_sigs)
     risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
 
     return Signal(
