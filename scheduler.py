@@ -1,28 +1,60 @@
 import logging
+from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from telegram.ext import Application
 from telegram.constants import ParseMode
-
 from data_fetcher import fetch_multiple_pairs
 from signal_engine import scan_all_pairs
 from formatter import format_signal
-from session_manager import is_good_session, is_weekend
+from session_manager import is_good_session, is_weekend, get_current_session, get_session_pairs
 from user_settings import get_balance
-from config import CHAT_IDS, ALL_PAIRS, CRYPTO_PAIRS, AUTO_SIGNAL_INTERVAL
+from config import CHAT_IDS, CRYPTO_PAIRS, AUTO_SIGNAL_INTERVAL
 
-logger    = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
+
+# Tracks how many signals have been sent per session per day
+# Format: { "2025-06-16_London": 2 }
+_session_signal_count: dict[str, int] = {}
+
+MAX_SIGNALS_PER_SESSION = 2
+
+
+def _session_key(session_name: str) -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"{today}_{session_name}"
+
+
+def _can_send_signal(session_name: str) -> bool:
+    key = _session_key(session_name)
+    return _session_signal_count.get(key, 0) < MAX_SIGNALS_PER_SESSION
+
+
+def _record_signal_sent(session_name: str):
+    key = _session_key(session_name)
+    _session_signal_count[key] = _session_signal_count.get(key, 0) + 1
 
 
 async def auto_scan(app: Application):
-    pairs = CRYPTO_PAIRS if is_weekend() else ALL_PAIRS
+    session_name, is_active = get_current_session()
 
-    if not is_good_session():
-        logger.info("Auto-scan skipped — off-hours.")
-        return
+    # Skip weekends (crypto only mode — no session limit applies)
+    if is_weekend():
+        pairs = CRYPTO_PAIRS
+    else:
+        if not is_active:
+            logger.info("Auto-scan skipped — off-hours.")
+            return
 
-    logger.info(f"🔄 Auto-scan ({'crypto only' if is_weekend() else 'all pairs'})…")
+        if not _can_send_signal(session_name):
+            logger.info(f"Auto-scan skipped — already sent {MAX_SIGNALS_PER_SESSION} signals for {session_name}.")
+            return
+
+        # Use only the best pairs for this session
+        pairs = get_session_pairs(session_name)
+
+    logger.info(f"🔄 Auto-scan started for [{session_name}] with pairs: {pairs}")
 
     try:
         data_map = await fetch_multiple_pairs(pairs)
@@ -30,23 +62,19 @@ async def auto_scan(app: Application):
         logger.error(f"Auto-scan fetch error: {e}", exc_info=True)
         return
 
-    for raw_id in CHAT_IDS:
-        raw_id = str(raw_id).strip()
-        if not raw_id:
+    for chat_id in CHAT_IDS:
+        chat_id = chat_id.strip()
+        if not chat_id:
             continue
 
-        try:
-            chat_id = int(raw_id)
-        except ValueError:
-            logger.warning(f"Invalid CHAT_ID: {raw_id}")
-            continue
+        balance = get_balance(int(chat_id))
 
-        balance = get_balance(chat_id)
         if balance is None:
             try:
                 await app.bot.send_message(
                     chat_id,
-                    "⚠️ *Auto-signal ready but no balance set!*\n\nUse /setbalance.",
+                    "⚠️ *Auto-signal ready but no balance set!*\n\n"
+                    "Use /setbalance to activate auto-signals.",
                     parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception:
@@ -54,31 +82,37 @@ async def auto_scan(app: Application):
             continue
 
         crypto_only = is_weekend()
-        signals     = scan_all_pairs(data_map, account_balance=balance, crypto_only=crypto_only)
+        signals = scan_all_pairs(data_map, account_balance=balance, crypto_only=crypto_only)
 
         if not signals:
-            logger.info(f"No signals for chat {chat_id}")
+            logger.info(f"No signals for {chat_id} in {session_name}")
             continue
 
-        top   = signals[:3]
-        label = "₿ Crypto" if crypto_only else "📊 Auto"
+        # Only send top 1 signal (the highest scoring)
+        top = signals[:1]
+        label = "₿ Crypto" if crypto_only else f"📊 {session_name}"
 
         try:
             await app.bot.send_message(
                 chat_id,
-                f"⚡ *{label} Signal Alert*\n"
-                f"Found *{len(signals)}* signal(s) — top {len(top)} shown\n"
+                f"⚡ *{label} Signal*\n"
+                f"Signal {_session_signal_count.get(_session_key(session_name), 0) + 1}/{MAX_SIGNALS_PER_SESSION} this session\n"
                 f"💰 Balance: `${balance:,.2f}`\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━",
                 parse_mode=ParseMode.MARKDOWN,
             )
             for i, sig in enumerate(top, 1):
                 await app.bot.send_message(
-                    chat_id, format_signal(sig, i, len(top)),
+                    chat_id,
+                    format_signal(sig, i, len(top)),
                     parse_mode=ParseMode.MARKDOWN,
                 )
         except Exception as e:
             logger.error(f"Send error to {chat_id}: {e}")
+
+    # Record after sending (only for forex sessions)
+    if not is_weekend():
+        _record_signal_sent(session_name)
 
 
 async def start_scheduler(app: Application):
@@ -90,4 +124,4 @@ async def start_scheduler(app: Application):
         replace_existing=True,
     )
     scheduler.start()
-    logger.info(f"✅ Scheduler started — every {AUTO_SIGNAL_INTERVAL} min.")
+    logger.info(f"✅ Scheduler started — every {AUTO_SIGNAL_INTERVAL} min, max {MAX_SIGNALS_PER_SESSION} signals/session.")
