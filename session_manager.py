@@ -1,7 +1,19 @@
 from datetime import datetime, timezone
-from config import SESSIONS, SESSION_OVERLAPS, AUTO_SIGNAL_INTERVAL, CRYPTO_PAIRS
+from config import AUTO_SIGNAL_INTERVAL, CRYPTO_PAIRS
 
-# Best pairs per session — names must match config.py exactly
+# Define sessions and overlaps directly here — no import from config needed
+SESSIONS = {
+    "Tokyo":    {"start": 0,  "end": 9},
+    "London":   {"start": 7,  "end": 16},
+    "New York": {"start": 12, "end": 21},
+}
+
+SESSION_OVERLAPS = [
+    {"name": "Tokyo/London Overlap",      "start": 7,  "end": 9},
+    {"name": "London/New York Overlap",   "start": 12, "end": 16},
+]
+
+# Best pairs to scan per session
 SESSION_PAIRS_MAP = {
     "Tokyo":                    ["USD/JPY", "EUR/JPY", "GBP/JPY", "AUD/JPY", "CHF/JPY"],
     "Tokyo/London Overlap":     ["EUR/JPY", "GBP/JPY", "EUR/GBP", "USD/JPY"],
@@ -44,7 +56,6 @@ def get_current_session() -> tuple:
 
 
 def get_session_pairs(session_name: str) -> list:
-    """Return the best pairs to scan for a given session name."""
     return SESSION_PAIRS_MAP.get(session_name, DEFAULT_PAIRS)
 
 
