@@ -1,16 +1,15 @@
 from datetime import datetime, timezone
 from config import SESSIONS, SESSION_OVERLAPS, AUTO_SIGNAL_INTERVAL, CRYPTO_PAIRS
 
-# Best pairs to trade per session (high liquidity, tight spreads)
+# Best pairs per session — names must match config.py exactly
 SESSION_PAIRS_MAP = {
-    "Sydney": ["AUD/USD", "NZD/USD", "AUD/JPY", "NZD/JPY"],
-    "Tokyo": ["USD/JPY", "EUR/JPY", "GBP/JPY", "AUD/JPY", "USD/CHF"],
-    "London": ["EUR/USD", "GBP/USD", "EUR/GBP", "USD/CHF", "GBP/JPY"],
-    "New York": ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CAD", "USD/CHF"],
-    "London/New York Overlap": ["EUR/USD", "GBP/USD", "USD/JPY", "EUR/GBP"],  # Best window
+    "Tokyo":                    ["USD/JPY", "EUR/JPY", "GBP/JPY", "AUD/JPY", "CHF/JPY"],
+    "Tokyo/London Overlap":     ["EUR/JPY", "GBP/JPY", "EUR/GBP", "USD/JPY"],
+    "London":                   ["EUR/USD", "GBP/USD", "EUR/GBP", "USD/CHF", "GBP/JPY"],
+    "London/New York Overlap":  ["EUR/USD", "GBP/USD", "USD/JPY", "EUR/GBP"],
+    "New York":                 ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CAD", "USD/CHF"],
 }
 
-# Fallback if session name doesn't match
 DEFAULT_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY"]
 
 
@@ -45,12 +44,8 @@ def get_current_session() -> tuple:
 
 
 def get_session_pairs(session_name: str) -> list:
-    """Return the best pairs to trade for the given session."""
-    # Strip emoji or extra text if session name has it
-    for key in SESSION_PAIRS_MAP:
-        if key.lower() in session_name.lower():
-            return SESSION_PAIRS_MAP[key]
-    return DEFAULT_PAIRS
+    """Return the best pairs to scan for a given session name."""
+    return SESSION_PAIRS_MAP.get(session_name, DEFAULT_PAIRS)
 
 
 def is_good_session() -> bool:
