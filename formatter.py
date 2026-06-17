@@ -1,90 +1,19 @@
-from datetime import datetime, timezone
+def format_no_trade(result: dict) -> str:
+    """Format a NO TRADE result with reasons — like TradeVisor's 'Sit this one out'."""
+    pair = result.get("pair", "")
+    direction = result.get("direction", "")
+    conviction = result.get("conviction", 0)
+    reasons = result.get("reasons", [])
+    d_emoji = DIR_EMOJI.get(direction, "—")
 
-TF_EMOJI = {
-    "5min": "⚡",
-    "15min": "🔸",
-    "1h": "🔵",
-    "4h": "🟣",
-    "1day": "🟡",
-}
-
-CONF_EMOJI = {
-    "VERY HIGH": "✅",
-    "HIGH": "🟢",
-    "MEDIUM": "🟡",
-    "LOW": "🔴",
-}
-
-DIR_EMOJI = {"BUY": "🟢", "SELL": "🔴"}
-
-
-def fmt_tf_block(tfs, index: int) -> str:
-    """Format one timeframe block."""
-    agrees_emoji = "✅" if tfs.agrees else "⬜"
-    confirmed_str = ", ".join(tfs.confirmed) if tfs.confirmed else "None"
-    label = tfs.tf.upper().replace("1DAY", "Daily").replace("MIN", "M")
-    macd_str = f"{tfs.macd:.5f}" if abs(tfs.macd) < 0.01 else f"{tfs.macd:.2f}"
-
-    # Use getattr for adx so it works even if field is missing (safe fallback)
-    adx_val = getattr(tfs, "adx", None)
-    adx_str = f" | ADX: {adx_val}" if adx_val is not None else ""
-
-    # indicators field: show out of 8 now (was /5)
-    ind_max = 8
+    reasons_text = "\n".join(f"  • {r}" for r in reasons)
 
     return (
-        f"{agrees_emoji} *{label}* | *{tfs.direction}* | {tfs.indicators}/{ind_max} indicators\n"
-        f"  ✔ {confirmed_str}\n"
-        f"  Entry: `{tfs.entry}` | TP: `{tfs.take_profit}` | SL: `{tfs.stop_loss}`\n"
-        f"  SL {tfs.sl_pips}p / TP {tfs.tp_pips}p | Lot: `{tfs.lot_size}`\n"
-        f"  RSI: {tfs.rsi} | Stoch: {tfs.stoch} | MACD: {macd_str}{adx_str}"
-    )
-
-
-def format_signal(sig, index: int = 1, total: int = 1) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    d_emoji = DIR_EMOJI.get(sig.direction, "")
-    c_emoji = CONF_EMOJI.get(sig.confidence, "")
-    a_label = "₿ CRYPTO" if sig.asset_type == "CRYPTO" else "💱 FOREX"
-
-    tf_blocks = "\n\n".join(fmt_tf_block(t, i) for i, t in enumerate(sig.tf_signals, 1))
-
-    return (
-        f"📊 *{sig.pair}* {d_emoji} *{sig.direction}*\n"
-        f"⏰ {now}\n"
-        f"Confidence: {c_emoji} *{sig.confidence}* — {sig.tfs_agreed}/{sig.total_tfs} TFs\n"
-        f"Pair Score: *{sig.score}* | {a_label}\n"
-        f"💰 Risk: `${sig.risk_amount}` (1% of balance)\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{tf_blocks}\n\n"
+        f"🚫 *NO TRADE — {pair}*\n"
+        f"Sit this one out.\n\n"
+        f"Attempted direction: {d_emoji} {direction}\n"
+        f"Conviction: *{conviction}%*\n\n"
+        f"*Reasons:*\n{reasons_text}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 _Signal {index}/{total}_"
-    )
-
-
-def format_no_signal() -> str:
-    return (
-        "🔍 *Scan Complete*\n\n"
-        "No qualifying signals right now.\n"
-        "⏳ Auto-scan retries in 30 min."
-    )
-
-
-def format_scanning(crypto_only: bool = False) -> str:
-    scope = "12 crypto pairs" if crypto_only else "47 forex + 12 crypto"
-    return (
-        f"🔄 *Scanning {scope}…*\n\n"
-        f"Running 3 timeframes × 9 indicators per pair.\n\n"
-        f"⏳ Please wait 30–60 seconds…"
-    )
-
-
-def format_status(session: str, active: bool, mins: int, bal: str) -> str:
-    st = "🟢 ACTIVE" if active else "🔴 INACTIVE"
-    return (
-        f"📡 *Bot Status*\n\n"
-        f"🕐 *{session}* — {st}\n"
-        f"⏱ Next scan: *{mins} min*\n"
-        f"💰 Balance: *{bal}*\n\n"
-        f"₿ Crypto 24/7 · 💱 Forex weekdays"
+        f"⏳ _Auto-scan retries in 30 min_"
     )
