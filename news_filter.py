@@ -1,121 +1,142 @@
-"""
-News filter — checks ForexFactory economic calendar.
-Skips pairs whose currencies have high-impact news within 2 hours.
-Free, no API key needed.
-"""
-import aiohttp
-import asyncio
+# news_filter.py
+# Fetches high-impact economic events and blocks signals around them.
+# Uses ForexFactory calendar (free, no API key needed via scraping)
+# Falls back gracefully if fetch fails — never crashes the bot.
+
 import logging
+import httpx
 from datetime import datetime, timezone, timedelta
-from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# Currency to pairs mapping
-CURRENCY_PAIRS = {
-    "USD": ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
-            "EUR/JPY", "GBP/JPY", "EUR/GBP", "AUD/JPY", "EUR/CAD", "GBP/CAD", "CAD/JPY",
-            "AUD/CAD", "BTC/USD", "ETH/USD"],
-    "EUR": ["EUR/USD", "EUR/GBP", "EUR/JPY", "EUR/AUD", "EUR/CAD", "EUR/NZD"],
-    "GBP": ["GBP/USD", "GBP/JPY", "GBP/AUD", "GBP/CAD", "GBP/NZD", "EUR/GBP"],
-    "JPY": ["USD/JPY", "EUR/JPY", "GBP/JPY", "AUD/JPY", "CAD/JPY", "NZD/JPY"],
-    "AUD": ["AUD/USD", "AUD/JPY", "EUR/AUD", "GBP/AUD", "AUD/CAD", "AUD/NZD"],
-    "CAD": ["USD/CAD", "EUR/CAD", "GBP/CAD", "CAD/JPY", "AUD/CAD"],
-    "NZD": ["NZD/USD", "NZD/JPY", "EUR/NZD", "GBP/NZD", "AUD/NZD"],
-    "CHF": ["USD/CHF", "EUR/CHF", "GBP/CHF", "AUD/CHF", "CHF/JPY"],
-}
+# Currencies that affect Forex pairs
+WATCHED_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"}
 
-# High impact news keywords
-HIGH_IMPACT_KEYWORDS = [
-    "NFP", "Non-Farm", "Interest Rate", "Fed", "FOMC", "ECB", "BOE", "BOJ", "RBA",
-    "CPI", "GDP", "Unemployment", "Retail Sales", "PMI", "PPI", "Trade Balance",
-    "Inflation", "Rate Decision", "Press Conference", "Monetary Policy",
-]
+# Block signals this many minutes before AND after a high-impact event
+BLOCK_BEFORE_MINUTES = 120   # 2 hours before
+BLOCK_AFTER_MINUTES  = 60    # 1 hour after
 
-_cache = {"pairs": set(), "timestamp": None}
-CACHE_MINUTES = 30
+# Cache so we don't fetch every single scan
+_cache: dict = {"events": [], "fetched_at": None}
+CACHE_TTL_MINUTES = 60
 
 
-async def fetch_news_pairs() -> set:
+def _is_cache_valid() -> bool:
+    if _cache["fetched_at"] is None:
+        return False
+    age = (datetime.now(timezone.utc) - _cache["fetched_at"]).total_seconds()
+    return age < CACHE_TTL_MINUTES * 60
+
+
+async def _fetch_events() -> list:
     """
-    Fetch high-impact news from ForexFactory and return
-    set of pairs that should be avoided right now.
-    Uses cache to avoid repeated fetches.
+    Fetch today's high-impact events from ForexFactory calendar JSON.
+    Returns list of dicts: {currency, event, time (UTC datetime), impact}
     """
-    global _cache
+    if _is_cache_valid():
+        return _cache["events"]
 
-    now = datetime.now(timezone.utc)
-
-    # Return cached result if fresh
-    if _cache["timestamp"] and (now - _cache["timestamp"]).seconds < CACHE_MINUTES * 60:
-        return _cache["pairs"]
-
-    avoid_pairs = set()
-    avoid_currencies = set()
-
+    events = []
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(
-                "https://www.forexfactory.com/calendar",
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                html = await resp.text()
+        # ForexFactory provides a public JSON calendar endpoint
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
 
-        soup = BeautifulSoup(html, "html.parser")
-        rows = soup.select("tr.calendar__row")
+        now = datetime.now(timezone.utc)
+        today = now.date()
 
-        window_start = now - timedelta(minutes=30)
-        window_end   = now + timedelta(hours=2)
-
-        for row in rows:
-            # Check impact
-            impact = row.select_one(".impact span")
-            if not impact:
-                continue
-            impact_class = impact.get("class", [])
-            if not any("high" in c.lower() or "red" in c.lower() for c in impact_class):
+        for item in data:
+            impact = item.get("impact", "").upper()
+            if impact != "HIGH":
                 continue
 
-            # Get currency
-            currency_el = row.select_one(".currency")
-            if not currency_el:
-                continue
-            currency = currency_el.text.strip().upper()
-
-            # Get event name
-            event_el = row.select_one(".event span")
-            event = event_el.text.strip() if event_el else ""
-
-            # Check if it's truly high impact by keyword
-            is_high = any(kw.lower() in event.lower() for kw in HIGH_IMPACT_KEYWORDS)
-            if not is_high:
+            currency = item.get("country", "").upper()
+            if currency not in WATCHED_CURRENCIES:
                 continue
 
-            avoid_currencies.add(currency)
-            logger.info(f"🚨 News filter: {currency} — {event}")
+            # Parse event time — FF uses format "2026-06-17T14:30:00-04:00"
+            raw_time = item.get("date", "")
+            if not raw_time:
+                continue
 
-        # Map currencies to pairs
-        for currency in avoid_currencies:
-            pairs = CURRENCY_PAIRS.get(currency, [])
-            avoid_pairs.update(pairs)
+            try:
+                event_time = datetime.fromisoformat(raw_time).astimezone(timezone.utc)
+            except Exception:
+                continue
+
+            # Only keep today's and tomorrow's events
+            if event_time.date() not in (today, today + timedelta(days=1)):
+                continue
+
+            events.append({
+                "currency": currency,
+                "event": item.get("title", "Unknown"),
+                "time": event_time,
+                "impact": impact,
+            })
+
+        _cache["events"] = events
+        _cache["fetched_at"] = datetime.now(timezone.utc)
+        logger.info(f"[NewsFilter] Fetched {len(events)} high-impact events")
 
     except Exception as e:
-        logger.warning(f"News filter fetch failed: {e} — proceeding without filter")
-        return set()  # fail open — don't block signals if news fetch fails
+        logger.warning(f"[NewsFilter] Failed to fetch calendar: {e}")
+        # Return stale cache rather than crashing
+        return _cache.get("events", [])
 
-    _cache = {"pairs": avoid_pairs, "timestamp": now}
-    return avoid_pairs
+    return events
 
 
-def format_news_warning(skipped_pairs: list) -> str:
-    if not skipped_pairs:
-        return ""
-    pairs_text = ", ".join(skipped_pairs[:6])
-    return (
-        f"⚠️ *News Filter Active*\n"
-        f"Skipped due to high-impact news: {pairs_text}\n"
-        f"_Avoid trading these pairs for 2 hours_\n\n"
-    )
+def _pair_currencies(pair: str) -> set:
+    """Extract the two currencies from a pair string e.g. EURUSD → {EUR, USD}"""
+    pair = pair.upper().replace("/", "").replace("_", "")
+    if len(pair) >= 6:
+        return {pair[:3], pair[3:6]}
+    return set()
+
+
+async def check_news_block(pair: str) -> tuple[bool, str]:
+    """
+    Returns (blocked: bool, reason: str).
+    blocked=True means DO NOT send signal for this pair right now.
+    """
+    events = await _fetch_events()
+    now = datetime.now(timezone.utc)
+    pair_currencies = _pair_currencies(pair)
+
+    for ev in events:
+        if ev["currency"] not in pair_currencies:
+            continue
+
+        event_time = ev["time"]
+        diff_minutes = (event_time - now).total_seconds() / 60
+
+        # Block window: BLOCK_BEFORE_MINUTES before to BLOCK_AFTER_MINUTES after
+        if -BLOCK_AFTER_MINUTES <= diff_minutes <= BLOCK_BEFORE_MINUTES:
+            if diff_minutes >= 0:
+                reason = (
+                    f"⚠️ HIGH IMPACT EVENT in {int(diff_minutes)}min\n"
+                    f"📰 {ev['currency']}: {ev['event']}"
+                )
+            else:
+                reason = (
+                    f"⚠️ HIGH IMPACT EVENT ended {int(-diff_minutes)}min ago\n"
+                    f"📰 {ev['currency']}: {ev['event']}"
+                )
+            return True, reason
+
+    return False, ""
+
+
+async def get_upcoming_events(hours: int = 24) -> list:
+    """Return upcoming high-impact events within the next N hours. Used by /status."""
+    events = await _fetch_events()
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=hours)
+    return [
+        e for e in events
+        if now <= e["time"] <= cutoff
+    ]
