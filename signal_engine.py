@@ -15,11 +15,11 @@ class TFSignal:
     direction: str
     entry: float
     stop_loss: float
-    take_profit: float       # main TP (TP2)
-    tp1: float               # partial exit — 1:1 RR
-    tp2: float               # main target — 1:2 RR
-    tp3: float               # extended target — 1:3 RR
-    invalidation: float      # structural invalidation beyond SL
+    take_profit: float
+    tp1: float
+    tp2: float
+    tp3: float
+    invalidation: float
     sl_pips: float
     tp_pips: float
     lot_size: float
@@ -41,14 +41,15 @@ class Signal:
     tfs_agreed: int
     total_tfs: int
     tf_signals: list
-    tp1: float = 0.0         # partial TP
-    tp2: float = 0.0         # main TP
-    tp3: float = 0.0         # extended TP
+    tp1: float = 0.0
+    tp2: float = 0.0
+    tp3: float = 0.0
     stop_loss: float = 0.0
     invalidation: float = 0.0
     asset_type: str = "FOREX"
     risk_amount: float = 0.0
     sr_warning: str = ""
+    regime: dict = field(default_factory=dict)
 
 
 def is_crypto(pair: str) -> bool:
@@ -73,7 +74,7 @@ def lot_size(pair: str, sl_pips: float, balance: float) -> float:
 
 
 def rsi_score(rsi: float, direction: str) -> float:
-    """Sweet spot RSI scoring."""
+    """Sweet spot RSI scoring — rewards healthy momentum, penalises exhaustion."""
     if direction == "BUY":
         if 40 <= rsi <= 65:  return  1.0
         if 65 < rsi <= 75:   return  0.3
@@ -96,17 +97,18 @@ def daily_trend(processed: dict):
         return None
     row = df.iloc[-1]
     pts = sum([
-        row["ema9"]  > row["ema21"],
-        row["ema21"] > row["ema50"],
-        row["macd"]  > row["macd_signal"],
+        row["ema9"]    > row["ema21"],
+        row["ema21"]   > row["ema50"],
+        row["macd"]    > row["macd_signal"],
         row["plus_di"] > row["minus_di"],
-        row["rsi"] > 50,
+        row["rsi"]     > 50,
     ])
     return "BUY" if pts >= 3 else "SELL"
 
 
 def check_sr_proximity(entry: float, direction: str,
                         df: pd.DataFrame, threshold: float = 0.003) -> str:
+    """Warn if entry is within 0.3% of a recent swing high or low."""
     support, resistance = support_resistance(df)
     if direction == "BUY":
         if (resistance - entry) / entry < threshold:
@@ -117,14 +119,79 @@ def check_sr_proximity(entry: float, direction: str,
     return ""
 
 
+def market_regime(processed: dict, pair: str) -> dict:
+    """
+    Compute market regime from existing indicator data.
+    Uses ADX, ATR, EMA from 1h or 4h — zero extra API calls.
+    """
+    df  = processed.get("1h") or processed.get("4h") or list(processed.values())[-1]
+    row = df.iloc[-1]
+
+    adx      = row.get("adx", 0)
+    atr      = row.get("atr", 0)
+    close    = row.get("close", 1)
+    ema9     = row.get("ema9", 0)
+    ema21    = row.get("ema21", 0)
+    ema50    = row.get("ema50", 0)
+    plus_di  = row.get("plus_di", 0)
+    minus_di = row.get("minus_di", 0)
+
+    # Trend direction
+    if ema9 > ema21 > ema50 and plus_di > minus_di:
+        trend = "Trending Up 📈"
+    elif ema9 < ema21 < ema50 and minus_di > plus_di:
+        trend = "Trending Down 📉"
+    else:
+        trend = "Ranging ↔️"
+
+    # Phase — how strong the trend is
+    if adx >= 35:
+        phase = "Strong Trend"
+    elif adx >= 20:
+        phase = "Trending"
+    elif adx >= 12:
+        phase = "Weak Trend"
+    else:
+        phase = "Ranging / Choppy"
+
+    # Volatility — ATR as % of price
+    atr_pct = (atr / close) * 100 if close > 0 else 0
+    if atr_pct > 0.8:
+        volatility = "High ⚡"
+    elif atr_pct > 0.3:
+        volatility = "Normal"
+    else:
+        volatility = "Low 😴"
+
+    # Session quality
+    from session_manager import get_current_session
+    session_name, is_active = get_current_session()
+
+    if "Overlap" in session_name:
+        session_quality = "High ✅"
+    elif is_active:
+        session_quality = "Medium"
+    else:
+        session_quality = "Low ❌"
+
+    return {
+        "trend":           trend,
+        "phase":           phase,
+        "volatility":      volatility,
+        "session":         session_name,
+        "session_quality": session_quality,
+        "adx":             round(adx, 1),
+    }
+
+
 def overall_direction(tf_data: dict, processed: dict) -> str:
     buy = 0
     for tf, df in processed.items():
         row = df.iloc[-1]
         pts = sum([
-            row["ema9"] > row["ema21"],
-            row["macd"] > row["macd_signal"],
-            row["rsi"] < 50,
+            row["ema9"]    > row["ema21"],
+            row["macd"]    > row["macd_signal"],
+            row["rsi"]     < 50,
             row["stoch_k"] > row["stoch_d"],
             row["plus_di"] > row["minus_di"],
         ])
@@ -132,23 +199,20 @@ def overall_direction(tf_data: dict, processed: dict) -> str:
     return "BUY" if buy >= len(processed) / 2 else "SELL"
 
 
-def compute_tps(direction: str, entry: float, sl: float, pair: str, dec: int):
-    """
-    Compute TP1 (1:1), TP2 (1:2), TP3 (1:3) and invalidation from entry/SL.
-    Invalidation is SL extended by 50% — the structural bail-out level.
-    """
+def compute_tps(direction: str, entry: float, sl: float, dec: int):
+    """Compute TP1 (1:1), TP2 (1:2), TP3 (1:3) and invalidation level."""
     sl_dist = abs(entry - sl)
 
     if direction == "BUY":
         tp1          = round(entry + sl_dist * 1.0, dec)
         tp2          = round(entry + sl_dist * 2.0, dec)
         tp3          = round(entry + sl_dist * 3.0, dec)
-        invalidation = round(sl - sl_dist * 0.5,   dec)
+        invalidation = round(sl   - sl_dist * 0.5, dec)
     else:
         tp1          = round(entry - sl_dist * 1.0, dec)
         tp2          = round(entry - sl_dist * 2.0, dec)
         tp3          = round(entry - sl_dist * 3.0, dec)
-        invalidation = round(sl + sl_dist * 0.5,   dec)
+        invalidation = round(sl   + sl_dist * 0.5, dec)
 
     return tp1, tp2, tp3, invalidation
 
@@ -215,7 +279,7 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
     lot  = lot_size(pair, max(sl_p, 0.1), balance)
     dec  = 2 if is_crypto(pair) and close > 10 else 5
 
-    tp1, tp2, tp3, invalidation = compute_tps(direction, close, sl, pair, dec)
+    tp1, tp2, tp3, invalidation = compute_tps(direction, close, sl, dec)
 
     return TFSignal(
         tf=tf, direction=direction,
@@ -224,15 +288,22 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
         take_profit=tp2,
         tp1=tp1, tp2=tp2, tp3=tp3,
         invalidation=invalidation,
-        sl_pips=sl_p, tp_pips=tp_p, lot_size=lot,
-        indicators=ind_score, confirmed=confirmed,
-        rsi=round(rsi, 2), stoch=round(k, 2),
+        sl_pips=sl_p, tp_pips=tp_p,
+        lot_size=lot,
+        indicators=ind_score,
+        confirmed=confirmed,
+        rsi=round(rsi, 2),
+        stoch=round(k, 2),
         macd=round(row["macd"], 6),
         agrees=direction == overall_dir,
     )
 
 
 async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
+    """
+    Async — runs 5 gates before returning a signal.
+    Returns Signal, NO TRADE dict, or None.
+    """
     from news_filter import check_news_block
 
     try:
@@ -243,12 +314,12 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
 
     no_trade_reasons = []
 
-    # Gate 1 — News
+    # Gate 1 — News filter
     news_blocked, news_reason = await check_news_block(pair)
     if news_blocked:
         no_trade_reasons.append(news_reason)
 
-    # Gate 2 — Daily trend
+    # Gate 2 — Daily trend gate
     d_trend = daily_trend(processed)
     o_dir   = overall_direction(tf_data, processed)
     if d_trend is not None and d_trend != o_dir:
@@ -256,6 +327,7 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
             f"📉 Daily trend {d_trend} conflicts with signal {o_dir}"
         )
 
+    # Compute TF signals
     tf_sigs   = []
     total_ind = 0
     for tf, df in processed.items():
@@ -266,13 +338,15 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
     agreed = sum(1 for t in tf_sigs if t.agrees)
     score  = total_ind
 
-    # Gate 3 — Score
+    # Gate 3 — Score too low
     if score < 6:
-        no_trade_reasons.append(f"📊 Score too low ({score}/25)")
+        no_trade_reasons.append(f"📊 Score too low ({score}/25 — need ≥6)")
 
-    # Gate 4 — MTF alignment
+    # Gate 4 — MTF alignment weak
     if agreed < 2:
-        no_trade_reasons.append(f"🔀 MTF alignment weak ({agreed}/{len(tf_sigs)} TFs)")
+        no_trade_reasons.append(
+            f"🔀 MTF alignment weak ({agreed}/{len(tf_sigs)} TFs agree)"
+        )
 
     # Gate 5 — S/R proximity
     main_tf    = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
@@ -283,6 +357,7 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
         if score < 6:
             no_trade_reasons.append(f"🧱 Too close to structure — {sr_warning}")
 
+    # If any gate fired → NO TRADE
     if no_trade_reasons:
         return {
             "no_trade":   True,
@@ -292,6 +367,7 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
             "conviction": round((agreed / len(tf_sigs)) * 100),
         }
 
+    # All gates passed → valid Signal
     conf_pct = agreed / len(tf_sigs)
     if conf_pct >= 0.8:   confidence = "VERY HIGH"
     elif conf_pct >= 0.6: confidence = "HIGH"
@@ -299,7 +375,7 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
     else:                 confidence = "LOW"
 
     risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
-    dec      = 2 if is_crypto(pair) and main_tf.entry > 10 else 5
+    regime   = market_regime(processed, pair)
 
     return Signal(
         pair=pair, direction=o_dir,
@@ -315,11 +391,13 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
         asset_type="CRYPTO" if is_crypto(pair) else "FOREX",
         risk_amount=risk_usd,
         sr_warning=sr_warning,
+        regime=regime,
     )
 
 
 async def scan_all_pairs(data_map: dict, account_balance: float,
                           crypto_only: bool = False) -> list:
+    """Async scan — drops NO TRADE results, returns valid signals only."""
     signals = []
     for pair, tfs in data_map.items():
         if crypto_only and not is_crypto(pair): continue
@@ -361,6 +439,7 @@ async def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
 
     main_tf  = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
     risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
+    regime   = market_regime(processed, pair)
 
     return Signal(
         pair=pair, direction=o_dir,
@@ -376,4 +455,5 @@ async def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
         asset_type="CRYPTO" if is_crypto(pair) else "FOREX",
         risk_amount=risk_usd,
         sr_warning="",
+        regime=regime,
     )
