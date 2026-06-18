@@ -11,7 +11,6 @@ from signal_engine import scan_all_pairs, analyze_pair, overall_direction
 from formatter import format_signal, format_no_signal, format_scanning, format_status
 from session_manager import get_current_session, minutes_to_next_scan, is_weekend
 from user_settings import get_balance, set_balance
-from demo import generate_demo_signals, format_demo_signal
 from config import ALL_PAIRS, CRYPTO_PAIRS
 from indicators import compute_indicators
 import scan_lock
@@ -32,7 +31,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Commands:*\n"
         "/signal — full forex + crypto scan\n"
         "/crypto — crypto only *(24/7 ✅)*\n"
-        "/demo — preview signal format\n"
         "/setbalance — set your balance\n"
         "/status — session info\n"
         "/help — full guide\n\n"
@@ -185,30 +183,6 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         scan_lock.release()
 
 
-async def demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    await update.message.reply_text(
-        "🎯 *Demo Mode — Sample Signals*\n\n"
-        "Exact format of live signals.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-    signals = generate_demo_signals()
-    for i, sig in enumerate(signals, 1):
-        await context.bot.send_message(
-            chat_id, format_demo_signal(sig, i, len(signals)),
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    await context.bot.send_message(
-        chat_id,
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ *Live signals look exactly like this*\n\n"
-        "₿ /crypto → live signals right now\n"
-        "💱 /signal → forex on weekdays",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-
 async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     current = get_balance(chat_id)
@@ -264,7 +238,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Help*\n\n"
         "• /signal — full scan (weekdays)\n"
         "• /crypto — crypto 24/7\n"
-        "• /demo — sample signals\n"
         "• /setbalance — set balance\n"
         "• /status — session info\n\n"
         "*Signal format shows:*\n"
