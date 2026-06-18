@@ -1,10 +1,9 @@
-# signal_engine.py
 import pandas as pd
 import numpy as np
 import logging
 from dataclasses import dataclass, field
-from indicators import compute_indicators, support_resistance
-from config import RISK_PERCENT, CRYPTO_PAIRS, DEFAULT_RR_RATIO
+from indicators import compute_indicators
+from config import RISK_PERCENT, CRYPTO_PAIRS, STOCK_PAIRS, METAL_PAIRS, DEFAULT_RR_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -12,23 +11,19 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TFSignal:
     tf: str
-    direction: str
+    direction: str  # BUY / SELL
     entry: float
     stop_loss: float
     take_profit: float
-    tp1: float
-    tp2: float
-    tp3: float
-    invalidation: float
     sl_pips: float
     tp_pips: float
     lot_size: float
-    indicators: int
-    confirmed: list
+    indicators: int  # how many of 5 confirmed
+    confirmed: list  # names of confirmed indicators
     rsi: float
     stoch: float
     macd: float
-    agrees: bool
+    agrees: bool  # agrees with overall direction
 
 
 @dataclass
@@ -36,28 +31,28 @@ class Signal:
     pair: str
     direction: str
     entry: float
-    score: int
+    score: int  # sum of TF scores (max 25)
     confidence: str
-    tfs_agreed: int
+    tfs_agreed: int  # how many TFs agree
     total_tfs: int
-    tf_signals: list
-    tp1: float = 0.0
-    tp2: float = 0.0
-    tp3: float = 0.0
-    stop_loss: float = 0.0
-    invalidation: float = 0.0
+    tf_signals: list  # list of TFSignal
     asset_type: str = "FOREX"
     risk_amount: float = 0.0
-    sr_warning: str = ""
-    regime: dict = field(default_factory=dict)
 
 
 def is_crypto(pair: str) -> bool:
     return pair in CRYPTO_PAIRS
 
 
+def is_dollar_priced(pair: str) -> bool:
+    """Crypto, stocks, and gold are priced directly in $ rather than in
+    forex 'pips', so they share the same stop-loss / lot-size math."""
+    return pair in CRYPTO_PAIRS or pair in STOCK_PAIRS or pair in METAL_PAIRS
+
+
 def pip_size(pair: str) -> float:
-    if is_crypto(pair): return 1.0
+    if is_dollar_priced(pair):
+        return 1.0
     return 0.01 if "JPY" in pair else 0.0001
 
 
@@ -67,150 +62,20 @@ def pips(pair: str, a: float, b: float) -> float:
 
 def lot_size(pair: str, sl_pips: float, balance: float) -> float:
     risk = balance * RISK_PERCENT / 100
-    if is_crypto(pair):
+    if is_dollar_priced(pair):
         return round(risk / max(sl_pips, 1), 4)
     pv = 10 if "JPY" not in pair else 9.09
     return max(0.01, round(risk / (sl_pips * pv), 2))
 
 
-def rsi_score(rsi: float, direction: str) -> float:
-    if direction == "BUY":
-        if 40 <= rsi <= 65:  return  1.0
-        if 65 < rsi <= 75:   return  0.3
-        if rsi > 75:         return -0.5
-        if 25 <= rsi < 40:   return  0.3
-        if rsi < 25:         return -0.3
-    else:
-        if 35 <= rsi <= 60:  return  1.0
-        if 25 <= rsi < 35:   return  0.3
-        if rsi < 25:         return -0.5
-        if 60 < rsi <= 75:   return  0.3
-        if rsi > 75:         return -0.3
-    return 0.0
-
-
-def daily_trend(processed: dict):
-    df = processed.get("1day")
-    if df is None or len(df) < 2:
-        return None
+def analyze_tf(df: pd.DataFrame, pair: str, tf: str, balance: float, overall_dir: str) -> TFSignal:
     row = df.iloc[-1]
-    pts = sum([
-        row["ema9"]    > row["ema21"],
-        row["ema21"]   > row["ema50"],
-        row["macd"]    > row["macd_signal"],
-        row["plus_di"] > row["minus_di"],
-        row["rsi"]     > 50,
-    ])
-    return "BUY" if pts >= 3 else "SELL"
-
-
-def check_sr_proximity(entry: float, direction: str,
-                        df: pd.DataFrame, threshold: float = 0.003) -> str:
-    support, resistance = support_resistance(df)
-    if direction == "BUY":
-        if (resistance - entry) / entry < threshold:
-            return f"⚠️ Near resistance ({resistance:.5f})"
-    else:
-        if (entry - support) / entry < threshold:
-            return f"⚠️ Near support ({support:.5f})"
-    return ""
-
-
-def market_regime(processed: dict, pair: str) -> dict:
-    df  = processed.get("1h") or processed.get("4h") or list(processed.values())[-1]
-    row = df.iloc[-1]
-
-    adx      = row.get("adx", 0)
-    atr      = row.get("atr", 0)
-    close    = row.get("close", 1)
-    ema9     = row.get("ema9", 0)
-    ema21    = row.get("ema21", 0)
-    ema50    = row.get("ema50", 0)
-    plus_di  = row.get("plus_di", 0)
-    minus_di = row.get("minus_di", 0)
-
-    if ema9 > ema21 > ema50 and plus_di > minus_di:
-        trend = "Trending Up 📈"
-    elif ema9 < ema21 < ema50 and minus_di > plus_di:
-        trend = "Trending Down 📉"
-    else:
-        trend = "Ranging ↔️"
-
-    if adx >= 35:
-        phase = "Strong Trend"
-    elif adx >= 20:
-        phase = "Trending"
-    elif adx >= 12:
-        phase = "Weak Trend"
-    else:
-        phase = "Ranging / Choppy"
-
-    atr_pct = (atr / close) * 100 if close > 0 else 0
-    if atr_pct > 0.8:
-        volatility = "High ⚡"
-    elif atr_pct > 0.3:
-        volatility = "Normal"
-    else:
-        volatility = "Low 😴"
-
-    from session_manager import get_current_session
-    session_name, is_active = get_current_session()
-
-    if "Overlap" in session_name:
-        session_quality = "High ✅"
-    elif is_active:
-        session_quality = "Medium"
-    else:
-        session_quality = "Low ❌"
-
-    return {
-        "trend":           trend,
-        "phase":           phase,
-        "volatility":      volatility,
-        "session":         session_name,
-        "session_quality": session_quality,
-        "adx":             round(adx, 1),
-    }
-
-
-def overall_direction(tf_data: dict, processed: dict) -> str:
-    buy = 0
-    for tf, df in processed.items():
-        row = df.iloc[-1]
-        pts = sum([
-            row["ema9"]    > row["ema21"],
-            row["macd"]    > row["macd_signal"],
-            row["rsi"]     < 50,
-            row["stoch_k"] > row["stoch_d"],
-            row["plus_di"] > row["minus_di"],
-        ])
-        if pts >= 3: buy += 1
-    return "BUY" if buy >= len(processed) / 2 else "SELL"
-
-
-def compute_tps(direction: str, entry: float, sl: float, dec: int):
-    sl_dist = abs(entry - sl)
-    if direction == "BUY":
-        tp1          = round(entry + sl_dist * 1.0, dec)
-        tp2          = round(entry + sl_dist * 2.0, dec)
-        tp3          = round(entry + sl_dist * 3.0, dec)
-        invalidation = round(sl   - sl_dist * 0.5, dec)
-    else:
-        tp1          = round(entry - sl_dist * 1.0, dec)
-        tp2          = round(entry - sl_dist * 2.0, dec)
-        tp3          = round(entry - sl_dist * 3.0, dec)
-        invalidation = round(sl   + sl_dist * 0.5, dec)
-    return tp1, tp2, tp3, invalidation
-
-
-def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
-               balance: float, overall_dir: str) -> TFSignal:
-    row   = df.iloc[-1]
     close = row["close"]
-
+    ps = pip_size(pair)
     confirmed = []
-    buy_pts   = 0
+    buy_pts = 0
 
+    # 1. EMA trend
     if row["ema9"] > row["ema21"] > row["ema50"]:
         buy_pts += 1; confirmed.append("EMA")
     elif row["ema9"] < row["ema21"] < row["ema50"]:
@@ -218,6 +83,7 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
     else:
         if row["ema9"] > row["ema21"]: buy_pts += 0.5
 
+    # 2. MACD
     if row["macd"] > row["macd_signal"] and row["macd_hist"] > 0:
         buy_pts += 1; confirmed.append("MACD")
     elif row["macd"] < row["macd_signal"] and row["macd_hist"] < 0:
@@ -225,18 +91,21 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
     elif row["macd_hist"] > 0:
         buy_pts += 0.3; confirmed.append("MACD")
 
-    rsi             = row["rsi"]
-    direction_guess = "BUY" if buy_pts > 0 else "SELL"
-    rsi_pts         = rsi_score(rsi, direction_guess)
-    buy_pts        += rsi_pts
-    if rsi_pts > 0: confirmed.append("RSI")
+    # 3. RSI
+    rsi = row["rsi"]
+    if rsi < 50:
+        buy_pts += 0.5; confirmed.append("RSI")
+    elif rsi > 50:
+        buy_pts -= 0.5
 
+    # 4. Stochastic
     k = row["stoch_k"]
     if k > row["stoch_d"]:
         buy_pts += 0.5; confirmed.append("Stochastic")
     else:
         buy_pts -= 0.5
 
+    # 5. Bollinger
     if close < row["bb_mid"]:
         buy_pts += 0.5; confirmed.append("Bollinger")
     else:
@@ -245,8 +114,9 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
     direction = "BUY" if buy_pts > 0 else "SELL"
     ind_score = min(len(confirmed), 5)
 
-    atr    = row["atr"]
-    min_sl = close * 0.003 if is_crypto(pair) else (0.0010 if "JPY" not in pair else 0.10)
+    # Per-TF SL/TP based on ATR
+    atr = row["atr"]
+    min_sl = close * 0.003 if is_dollar_priced(pair) else (0.0010 if "JPY" not in pair else 0.10)
 
     if direction == "BUY":
         sl = close - max(1.2 * atr, min_sl)
@@ -257,19 +127,19 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
 
     sl_p = pips(pair, close, sl)
     tp_p = pips(pair, close, tp)
-    lot  = lot_size(pair, max(sl_p, 0.1), balance)
-    dec  = 2 if is_crypto(pair) and close > 10 else 5
+    lot = lot_size(pair, max(sl_p, 0.1), balance)
 
-    tp1, tp2, tp3, invalidation = compute_tps(direction, close, sl, dec)
+    # Precision
+    dec = 2 if is_dollar_priced(pair) and close > 10 else 5
 
     return TFSignal(
-        tf=tf, direction=direction,
+        tf=tf,
+        direction=direction,
         entry=round(close, dec),
         stop_loss=round(sl, dec),
-        take_profit=tp2,
-        tp1=tp1, tp2=tp2, tp3=tp3,
-        invalidation=invalidation,
-        sl_pips=sl_p, tp_pips=tp_p,
+        take_profit=round(tp, dec),
+        sl_pips=sl_p,
+        tp_pips=tp_p,
         lot_size=lot,
         indicators=ind_score,
         confirmed=confirmed,
@@ -280,27 +150,30 @@ def analyze_tf(df: pd.DataFrame, pair: str, tf: str,
     )
 
 
-async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
-    from news_filter import check_news_block
+def overall_direction(tf_data: dict, processed: dict) -> str:
+    buy = 0
+    for tf, df in processed.items():
+        row = df.iloc[-1]
+        pts = sum([
+            row["ema9"] > row["ema21"],
+            row["macd"] > row["macd_signal"],
+            row["rsi"] < 50,
+            row["stoch_k"] > row["stoch_d"],
+            row["plus_di"] > row["minus_di"],
+        ])
+        if pts >= 3: buy += 1
+    return "BUY" if buy >= len(processed) / 2 else "SELL"
 
+
+def analyze_pair(pair: str, tf_data: dict, account_balance: float):
     try:
         processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
     except Exception as e:
         logger.warning(f"{pair} indicator error: {e}")
         return None
 
-    no_trade_reasons = []
-
-    # News filter — keep active
-    news_blocked, news_reason = await check_news_block(pair)
-    if news_blocked:
-        no_trade_reasons.append(news_reason)
-
-    # Daily trend gate — DISABLED for demo
     o_dir = overall_direction(tf_data, processed)
-
-    # Compute TF signals
-    tf_sigs   = []
+    tf_sigs = []
     total_ind = 0
     for tf, df in processed.items():
         tfs = analyze_tf(df, pair, tf, account_balance, o_dir)
@@ -308,116 +181,90 @@ async def analyze_pair(pair: str, tf_data: dict, account_balance: float):
         total_ind += tfs.indicators
 
     agreed = sum(1 for t in tf_sigs if t.agrees)
-    score  = total_ind
+    score = total_ind  # max 25 (5 TFs × 5 indicators)
 
-    # Score gate — lowered to 2 for demo
-    if score < 2:
-        no_trade_reasons.append(f"📊 Score too low ({score}/25)")
-
-    # MTF gate — lowered to 1 for demo
-    if agreed < 1:
-        no_trade_reasons.append(
-            f"🔀 MTF alignment weak ({agreed}/{len(tf_sigs)} TFs)"
-        )
-
-    # S/R proximity — keep active
-    main_tf    = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
-    sr_ref_df  = processed.get("1h") or processed.get("4h") or list(processed.values())[-1]
-    sr_warning = check_sr_proximity(main_tf.entry, o_dir, sr_ref_df)
-
-    if no_trade_reasons:
-        return {
-            "no_trade":   True,
-            "pair":       pair,
-            "direction":  o_dir,
-            "reasons":    no_trade_reasons,
-            "conviction": round((agreed / len(tf_sigs)) * 100),
-        }
+    if score < 6:
+        return None
+    if agreed < 2:
+        return None
 
     conf_pct = agreed / len(tf_sigs)
-    if conf_pct >= 0.8:   confidence = "VERY HIGH"
+    if conf_pct >= 0.8: confidence = "VERY HIGH"
     elif conf_pct >= 0.6: confidence = "HIGH"
     elif conf_pct >= 0.4: confidence = "MEDIUM"
-    else:                 confidence = "LOW"
+    else: confidence = "LOW"
 
+    # Use entry from 1h as the main entry
+    main_tf = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
     risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
-    regime   = market_regime(processed, pair)
 
     return Signal(
-        pair=pair, direction=o_dir,
-        entry=main_tf.entry, score=score,
+        pair=pair,
+        direction=o_dir,
+        entry=main_tf.entry,
+        score=score,
         confidence=confidence,
-        tfs_agreed=agreed, total_tfs=len(tf_sigs),
+        tfs_agreed=agreed,
+        total_tfs=len(tf_sigs),
         tf_signals=tf_sigs,
-        tp1=main_tf.tp1,
-        tp2=main_tf.tp2,
-        tp3=main_tf.tp3,
-        stop_loss=main_tf.stop_loss,
-        invalidation=main_tf.invalidation,
         asset_type="CRYPTO" if is_crypto(pair) else "FOREX",
         risk_amount=risk_usd,
-        sr_warning=sr_warning,
-        regime=regime,
     )
 
 
-async def scan_all_pairs(data_map: dict, account_balance: float,
-                          crypto_only: bool = False) -> list:
+def scan_all_pairs(data_map: dict, account_balance: float, crypto_only: bool = False) -> list:
     signals = []
     for pair, tfs in data_map.items():
         if crypto_only and not is_crypto(pair): continue
         try:
-            result = await analyze_pair(pair, tfs, account_balance)
-            if result and not isinstance(result, dict):
-                signals.append(result)
+            sig = analyze_pair(pair, tfs, account_balance)
+            if sig: signals.append(sig)
         except Exception as e:
             logger.warning(f"{pair} error: {e}")
     signals.sort(key=lambda s: s.score, reverse=True)
     return signals
 
 
-async def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
+def force_analyze_pair(pair: str, tf_data: dict, account_balance: float):
+    """
+    Like analyze_pair but forces a signal even with low score.
+    Used to always show best available crypto signals.
+    """
     try:
         processed = {tf: compute_indicators(df) for tf, df in tf_data.items()}
     except Exception as e:
         logger.warning(f"{pair} indicator error: {e}")
         return None
 
-    o_dir     = overall_direction(tf_data, processed)
-    tf_sigs   = []
+    o_dir = overall_direction(tf_data, processed)
+    tf_sigs = []
     total_ind = 0
-
     for tf, df in processed.items():
         tfs = analyze_tf(df, pair, tf, account_balance, o_dir)
         tf_sigs.append(tfs)
         total_ind += tfs.indicators
 
-    agreed   = sum(1 for t in tf_sigs if t.agrees)
-    score    = total_ind
-    conf_pct = agreed / len(tf_sigs)
+    agreed = sum(1 for t in tf_sigs if t.agrees)
+    score = total_ind
 
-    if conf_pct >= 0.8:   confidence = "VERY HIGH"
+    conf_pct = agreed / len(tf_sigs)
+    if conf_pct >= 0.8: confidence = "VERY HIGH"
     elif conf_pct >= 0.6: confidence = "HIGH"
     elif conf_pct >= 0.4: confidence = "MEDIUM"
-    else:                 confidence = "LOW"
+    else: confidence = "LOW"
 
-    main_tf  = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
+    main_tf = next((t for t in tf_sigs if t.tf == "1h"), tf_sigs[0])
     risk_usd = round(account_balance * RISK_PERCENT / 100, 2)
-    regime   = market_regime(processed, pair)
 
     return Signal(
-        pair=pair, direction=o_dir,
-        entry=main_tf.entry, score=score,
+        pair=pair,
+        direction=o_dir,
+        entry=main_tf.entry,
+        score=score,
         confidence=confidence,
-        tfs_agreed=agreed, total_tfs=len(tf_sigs),
+        tfs_agreed=agreed,
+        total_tfs=len(tf_sigs),
         tf_signals=tf_sigs,
-        tp1=main_tf.tp1,
-        tp2=main_tf.tp2,
-        tp3=main_tf.tp3,
-        stop_loss=main_tf.stop_loss,
-        invalidation=main_tf.invalidation,
         asset_type="CRYPTO" if is_crypto(pair) else "FOREX",
         risk_amount=risk_usd,
-        sr_warning="",
-        regime=regime,
     )
