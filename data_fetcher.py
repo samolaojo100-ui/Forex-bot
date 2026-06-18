@@ -8,7 +8,7 @@ from config import TWELVEDATA_API_KEY, TIMEFRAMES
 logger = logging.getLogger(__name__)
 
 BASE_URL         = "https://api.twelvedata.com"
-RATE_LIMIT_DELAY = 9.0
+RATE_LIMIT_DELAY = 12.0
 PAIR_DELAY       = 2.0
 
 
