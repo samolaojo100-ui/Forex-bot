@@ -1,54 +1,38 @@
+# scheduler.py
 import logging
-from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from telegram.ext import Application
 from telegram.constants import ParseMode
+
 from data_fetcher import fetch_multiple_pairs
 from signal_engine import scan_all_pairs
-from formatter import format_signal
-from session_manager import is_good_session, is_weekend, get_current_session, get_session_pairs
+from formatter import format_signal, format_no_trade
+from session_manager import is_good_session, is_weekend
 from user_settings import get_balance
-from config import CHAT_IDS, CRYPTO_PAIRS, AUTO_SIGNAL_INTERVAL
+from config import CHAT_IDS, ALL_PAIRS, CRYPTO_PAIRS, AUTO_SIGNAL_INTERVAL
 
 logger = logging.getLogger(__name__)
+
 scheduler = AsyncIOScheduler()
-
-MAX_SIGNALS_PER_SESSION = 2
-
-# Tracks signals sent: { "2025-06-16_London": 1 }
-_session_signal_count: dict = {}
-
-
-def _session_key(session_name: str) -> str:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return f"{today}_{session_name}"
-
-
-def _can_send(session_name: str) -> bool:
-    return _session_signal_count.get(_session_key(session_name), 0) < MAX_SIGNALS_PER_SESSION
-
-
-def _record_sent(session_name: str):
-    key = _session_key(session_name)
-    _session_signal_count[key] = _session_signal_count.get(key, 0) + 1
 
 
 async def auto_scan(app: Application):
-    session_name, is_active = get_current_session()
+    """
+    Runs every AUTO_SIGNAL_INTERVAL minutes.
+    - Weekdays: scans all pairs during active sessions
+    - Weekends: scans crypto only (24/7)
+    """
+    crypto_only = is_weekend()
+    pairs       = CRYPTO_PAIRS if crypto_only else ALL_PAIRS
 
-    if is_weekend():
-        pairs = CRYPTO_PAIRS
-    else:
-        if not is_active:
-            logger.info("Auto-scan skipped — off-hours.")
-            return
-        if not _can_send(session_name):
-            logger.info(f"Skipped — already sent {MAX_SIGNALS_PER_SESSION} signals for [{session_name}].")
-            return
-        pairs = get_session_pairs(session_name)
+    # Skip forex scan during off-hours (crypto always runs)
+    if not crypto_only and not is_good_session():
+        logger.info("Auto-scan skipped — off-hours.")
+        return
 
-    logger.info(f"🔄 Auto-scan [{session_name}] — pairs: {pairs}")
+    label = "₿ Crypto" if crypto_only else "📊 Forex + Crypto"
+    logger.info(f"🔄 Auto-scan started ({label})…")
 
     try:
         data_map = await fetch_multiple_pairs(pairs)
@@ -56,8 +40,12 @@ async def auto_scan(app: Application):
         logger.error(f"Auto-scan fetch error: {e}", exc_info=True)
         return
 
-    for chat_id in CHAT_IDS:
-        chat_id = chat_id.strip()
+    if not data_map:
+        logger.info("Auto-scan — no data returned from API.")
+        return
+
+    for chat_id_raw in CHAT_IDS:
+        chat_id = str(chat_id_raw).strip()
         if not chat_id:
             continue
 
@@ -67,44 +55,58 @@ async def auto_scan(app: Application):
             try:
                 await app.bot.send_message(
                     chat_id,
-                    "⚠️ *Auto-signal ready but no balance set!*\n\nUse /setbalance to activate auto-signals.",
+                    "⚠️ *Auto-signal ready but no balance set!*\n\n"
+                    "Use /setbalance to activate auto-signals.",
                     parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception:
                 pass
             continue
 
-        crypto_only = is_weekend()
-        signals = scan_all_pairs(data_map, account_balance=balance, crypto_only=crypto_only)
-
-        if not signals:
-            logger.info(f"No signals for {chat_id} in [{session_name}]")
+        try:
+            # ── await is required — scan_all_pairs is async ──────────
+            signals = await scan_all_pairs(
+                data_map,
+                account_balance=balance,
+                crypto_only=crypto_only,
+            )
+        except Exception as e:
+            logger.error(f"Auto-scan signal error for {chat_id}: {e}")
             continue
 
-        sent_so_far = _session_signal_count.get(_session_key(session_name), 0)
-        label = "₿ Crypto" if crypto_only else f"📊 {session_name}"
+        if not signals:
+            logger.info(f"No qualifying signals for {chat_id}")
+            continue
+
+        top = signals[:2]  # max 2 signals per auto-scan to save API credits
 
         try:
             await app.bot.send_message(
                 chat_id,
-                f"⚡ *{label} Signal*\n"
-                f"Signal {sent_so_far + 1}/{MAX_SIGNALS_PER_SESSION} this session\n"
+                f"⚡ *{label} Signal Alert*\n"
+                f"Found *{len(signals)}* signal(s) — top {len(top)} shown\n"
                 f"💰 Balance: `${balance:,.2f}`\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            top = signals[:1]
+
             for i, sig in enumerate(top, 1):
-                await app.bot.send_message(
-                    chat_id,
-                    format_signal(sig, i, len(top)),
-                    parse_mode=ParseMode.MARKDOWN,
-                )
+                # Handle both Signal objects and NO TRADE dicts
+                if isinstance(sig, dict) and sig.get("no_trade"):
+                    await app.bot.send_message(
+                        chat_id,
+                        format_no_trade(sig),
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                else:
+                    await app.bot.send_message(
+                        chat_id,
+                        format_signal(sig, i, len(top)),
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+
         except Exception as e:
             logger.error(f"Send error to {chat_id}: {e}")
-
-    if not is_weekend():
-        _record_sent(session_name)
 
 
 async def start_scheduler(app: Application):
@@ -116,4 +118,4 @@ async def start_scheduler(app: Application):
         replace_existing=True,
     )
     scheduler.start()
-    logger.info(f"✅ Scheduler started — every {AUTO_SIGNAL_INTERVAL} min, max {MAX_SIGNALS_PER_SESSION} signals/session.")
+    logger.info(f"✅ Scheduler started — every {AUTO_SIGNAL_INTERVAL} min.")
