@@ -12,10 +12,12 @@ BASE_URL = "https://api.twelvedata.com"
 # TwelveData free tier returns status 429 (or a JSON error with code 429 /
 # message mentioning "limit") when you've hit the per-minute rate limit.
 # This is DIFFERENT from running out of daily credits (code 401/403 or a
-# message about API key / credits / quota). Previously the bot treated
-# every failure identically and just returned None, silently, with no log
-# of which one actually happened - so "rate limited for 60 seconds" and
-# "out of credits for the day" both looked the same to the user.
+# message about API key / credits / quota), and DIFFERENT again from a
+# malformed/unrecognized symbol (code 400 with a message about the symbol
+# or figi parameter). Previously the bot treated every failure identically
+# and just returned None, silently — so all three causes looked the same
+# to the user ("check your API key"), which sent us chasing the wrong fix
+# more than once.
 RATE_LIMIT_RETRY_SECONDS = 65   # TwelveData's limit window is per-minute
 MAX_RATE_LIMIT_RETRIES = 2
 
@@ -25,17 +27,31 @@ def _classify_error(data: dict, http_status: int) -> str:
     code = data.get("code", http_status)
     message = str(data.get("message", "")).lower()
 
-    if code == 429 or "rate limit" in message or "limit" in message and "minute" in message:
+    if code == 429 or "rate limit" in message or ("limit" in message and "minute" in message):
         return "rate_limit"
     if code in (401, 403) or "api key" in message or "credit" in message or "quota" in message:
         return "auth_or_quota"
-    if "symbol" in message and ("not found" in message or "invalid" in message):
+    if "symbol" in message or "figi" in message:
         return "bad_symbol"
     return "unknown"
 
 
+def _format_symbol(symbol: str) -> str:
+    """
+    TwelveData requires the slash for BOTH forex and crypto symbols
+    (e.g. "EUR/USD", "BTC/USD") — it is NOT just visual formatting.
+    Stripping the slash (symbol.replace("/", "")) sends TwelveData a
+    symbol it does not recognize, which is why every single crypto
+    pair was failing with a "symbol missing or invalid" error: the
+    slash was being removed before the request was ever sent.
+    This function now just normalizes spacing/case, and explicitly
+    does NOT remove the slash.
+    """
+    return symbol.strip().upper()
+
+
 async def fetch_ohlcv(session, symbol, interval, outputsize=100, _retry_count=0):
-    symbol_fmt = symbol.replace("/", "")
+    symbol_fmt = _format_symbol(symbol)
     url = (
         f"{BASE_URL}/time_series"
         f"?symbol={symbol_fmt}&interval={interval}"
@@ -72,7 +88,7 @@ async def fetch_ohlcv(session, symbol, interval, outputsize=100, _retry_count=0)
                     )
                 elif error_type == "bad_symbol":
                     logger.error(
-                        f"[BAD SYMBOL] {symbol} {interval}: {raw_message}"
+                        f"[BAD SYMBOL] {symbol} {interval} (sent as '{symbol_fmt}'): {raw_message}"
                     )
                 else:
                     logger.error(
