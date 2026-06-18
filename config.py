@@ -43,12 +43,13 @@ CRYPTO_PAIRS = [
     "MATIC/USD", "DOT/USD", "LTC/USD", "LINK/USD",
 ]
 
-FOREX_PAIRS = MAJOR_PAIRS + MINOR_PAIRS + EXOTIC_PAIRS
+# Only majors for speed — 7 forex + 12 crypto = 19 pairs total
+FOREX_PAIRS = MAJOR_PAIRS
 ALL_PAIRS   = FOREX_PAIRS + CRYPTO_PAIRS
 
 TIMEFRAMES = ["15min", "1h", "4h", "1day"]
 
-ACCOUNT_BALANCE    = float(os.getenv("ACCOUNT_BALANCE", "1000"))
-RISK_PERCENT       = 1.0
-DEFAULT_RR_RATIO   = 1.5
+ACCOUNT_BALANCE      = float(os.getenv("ACCOUNT_BALANCE", "1000"))
+RISK_PERCENT         = 1.0
+DEFAULT_RR_RATIO     = 1.5
 AUTO_SIGNAL_INTERVAL = 30
