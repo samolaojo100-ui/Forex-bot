@@ -3,7 +3,7 @@ from telegram.ext import Application, CommandHandler
 
 from config import BOT_TOKEN
 from handlers import (
-    start, signal_command, crypto_command, demo_command,
+    start, signal_command, crypto_command,
     help_command, status_command, build_setbalance_handler,
     unstuck_command,
 )
@@ -23,7 +23,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("signal", signal_command))
     app.add_handler(CommandHandler("crypto", crypto_command))
-    app.add_handler(CommandHandler("demo", demo_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("unstuck", unstuck_command))
