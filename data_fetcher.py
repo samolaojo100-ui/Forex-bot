@@ -9,17 +9,17 @@ BASE_URL = "https://api.twelvedata.com"
 
 
 async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100):
-    symbol_fmt = symbol.replace("/", "")
+    # DO NOT remove the slash — TwelveData needs BTC/USD not BTCUSD
     url = (
         f"{BASE_URL}/time_series"
-        f"?symbol={symbol_fmt}&interval={interval}"
+        f"?symbol={symbol}&interval={interval}"
         f"&outputsize={outputsize}&apikey={TWELVEDATA_API_KEY}&format=JSON"
     )
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             data = await resp.json()
             if data.get("status") == "error" or "values" not in data:
-                msg = data.get("message", "")
+                msg  = data.get("message", "")
                 code = data.get("code", "")
                 if code == 429 or "rate limit" in str(msg).lower():
                     logger.warning(f"⛔ Rate limit — waiting 60s")
@@ -41,14 +41,9 @@ async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100
 
 
 async def fetch_multiple_pairs(pairs: list) -> dict:
-    """
-    One shared session for ALL pairs and ALL timeframes.
-    8 seconds between EVERY single request — guaranteed under 8/min.
-    """
     data_map = {}
     total = len(pairs)
 
-    # ONE session for everything
     async with aiohttp.ClientSession() as session:
         for i, pair in enumerate(pairs, 1):
             logger.info(f"Fetching {pair} ({i}/{total})...")
@@ -56,7 +51,6 @@ async def fetch_multiple_pairs(pairs: list) -> dict:
             failed = False
 
             for tf in TIMEFRAMES:
-                # Wait BEFORE every request except the very first
                 if results or i > 1:
                     await asyncio.sleep(8)
 
