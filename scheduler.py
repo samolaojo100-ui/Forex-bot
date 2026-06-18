@@ -1,5 +1,5 @@
-# scheduler.py
 import logging
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from telegram.ext import Application
@@ -7,10 +7,11 @@ from telegram.constants import ParseMode
 
 from data_fetcher import fetch_multiple_pairs
 from signal_engine import scan_all_pairs
-from formatter import format_signal, format_no_trade
+from formatter import format_signal
 from session_manager import is_good_session, is_weekend
 from user_settings import get_balance
 from config import CHAT_IDS, ALL_PAIRS, CRYPTO_PAIRS, AUTO_SIGNAL_INTERVAL
+from scan_lock import ScanGuard
 
 logger = logging.getLogger(__name__)
 
@@ -18,22 +19,26 @@ scheduler = AsyncIOScheduler()
 
 
 async def auto_scan(app: Application):
-    """
-    Runs every AUTO_SIGNAL_INTERVAL minutes.
-    - Weekdays: scans all pairs during active sessions
-    - Weekends: scans crypto only (24/7)
-    """
-    crypto_only = is_weekend()
-    pairs       = CRYPTO_PAIRS if crypto_only else ALL_PAIRS
+    # Crypto scans always; forex only on weekdays
+    pairs = CRYPTO_PAIRS if is_weekend() else ALL_PAIRS
 
-    # Skip forex scan during off-hours (crypto always runs)
-    if not crypto_only and not is_good_session():
+    if not is_good_session():
         logger.info("Auto-scan skipped — off-hours.")
         return
 
-    label = "₿ Crypto" if crypto_only else "📊 Forex + Crypto"
-    logger.info(f"🔄 Auto-scan started ({label})…")
+    # Shares the same lock as the manual /signal and /crypto commands.
+    # If a user is mid-scan when this timer fires, skip this run rather
+    # than fetch concurrently — overlapping fetch loops is what trips
+    # TwelveData's per-minute rate limit even with daily credits to spare.
+    try:
+        async with ScanGuard("auto"):
+            await _run_auto_scan(app, pairs)
+    except RuntimeError as e:
+        logger.info(f"Auto-scan skipped — {e}")
 
+
+async def _run_auto_scan(app: Application, pairs):
+    logger.info(f"🔄 Auto-scan started ({'crypto only' if is_weekend() else 'all pairs'})…")
     try:
         data_map = await fetch_multiple_pairs(pairs)
     except Exception as e:
@@ -41,16 +46,15 @@ async def auto_scan(app: Application):
         return
 
     if not data_map:
-        logger.info("Auto-scan — no data returned from API.")
+        logger.warning("Auto-scan got no data back — check error log above for rate-limit/quota cause.")
         return
 
-    for chat_id_raw in CHAT_IDS:
-        chat_id = str(chat_id_raw).strip()
+    for chat_id in CHAT_IDS:
+        chat_id = chat_id.strip()
         if not chat_id:
             continue
 
         balance = get_balance(int(chat_id))
-
         if balance is None:
             try:
                 await app.bot.send_message(
@@ -63,22 +67,15 @@ async def auto_scan(app: Application):
                 pass
             continue
 
-        try:
-            # ── await is required — scan_all_pairs is async ──────────
-            signals = await scan_all_pairs(
-                data_map,
-                account_balance=balance,
-                crypto_only=crypto_only,
-            )
-        except Exception as e:
-            logger.error(f"Auto-scan signal error for {chat_id}: {e}")
-            continue
+        crypto_only = is_weekend()
+        signals = scan_all_pairs(data_map, account_balance=balance, crypto_only=crypto_only)
 
         if not signals:
-            logger.info(f"No qualifying signals for {chat_id}")
+            logger.info(f"No signals for {chat_id}")
             continue
 
-        top = signals[:2]  # max 2 signals per auto-scan to save API credits
+        top = signals[:3]
+        label = "₿ Crypto" if crypto_only else "📊 Auto"
 
         try:
             await app.bot.send_message(
@@ -89,22 +86,11 @@ async def auto_scan(app: Application):
                 f"━━━━━━━━━━━━━━━━━━━━━━━",
                 parse_mode=ParseMode.MARKDOWN,
             )
-
             for i, sig in enumerate(top, 1):
-                # Handle both Signal objects and NO TRADE dicts
-                if isinstance(sig, dict) and sig.get("no_trade"):
-                    await app.bot.send_message(
-                        chat_id,
-                        format_no_trade(sig),
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-                else:
-                    await app.bot.send_message(
-                        chat_id,
-                        format_signal(sig, i, len(top)),
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-
+                await app.bot.send_message(
+                    chat_id, format_signal(sig, i, len(top)),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
         except Exception as e:
             logger.error(f"Send error to {chat_id}: {e}")
 
