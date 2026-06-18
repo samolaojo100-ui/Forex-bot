@@ -9,7 +9,7 @@ BASE_URL = "https://api.twelvedata.com"
 
 
 async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100):
-    # DO NOT remove the slash — TwelveData needs BTC/USD not BTCUSD
+    # Keep the slash — TwelveData needs BTC/USD not BTCUSD
     url = (
         f"{BASE_URL}/time_series"
         f"?symbol={symbol}&interval={interval}"
@@ -22,8 +22,7 @@ async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100
                 msg  = data.get("message", "")
                 code = data.get("code", "")
                 if code == 429 or "rate limit" in str(msg).lower():
-                    logger.warning(f"⛔ Rate limit — waiting 60s")
-                    await asyncio.sleep(60)
+                    logger.warning(f"⛔ Rate limit hit on {symbol} {interval}")
                 else:
                     logger.warning(f"API error {symbol} {interval}: {msg}")
                 return None
@@ -51,9 +50,7 @@ async def fetch_multiple_pairs(pairs: list) -> dict:
             failed = False
 
             for tf in TIMEFRAMES:
-                if results or i > 1:
-                    await asyncio.sleep(8)
-
+                await asyncio.sleep(2)
                 df = await fetch_ohlcv(session, pair, tf)
                 if df is None or len(df) < 50:
                     logger.warning(f"{pair} {tf}: failed — skipping pair")
@@ -63,6 +60,8 @@ async def fetch_multiple_pairs(pairs: list) -> dict:
 
             if not failed and results:
                 data_map[pair] = results
+
+            await asyncio.sleep(1)
 
     logger.info(f"Fetch complete — {len(data_map)}/{total} pairs")
     return data_map
