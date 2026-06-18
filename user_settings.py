@@ -1,50 +1,47 @@
-"""
-User balance storage.
+# user_settings.py
+# Saves balance to a JSON file with Railway env var fallback.
+# Also reads ACCOUNT_BALANCE from Railway env as default for all users.
 
-Railway's filesystem is ephemeral (data lost on restart), so we use
-in-memory storage as the primary store, with an optional JSON file
-as a best-effort cache when the filesystem is writable.
-"""
 import json
 import os
 import logging
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_FILE = "/tmp/user_settings.json"   # /tmp is always writable on Railway
-
-# In-memory store (survives within a session; lost on restart)
-_MEMORY: dict = {}
+SETTINGS_FILE = "/tmp/user_settings.json"  # /tmp persists longer on Railway
 
 
 def _load() -> dict:
-    global _MEMORY
-    if _MEMORY:
-        return _MEMORY
-    try:
-        if os.path.exists(SETTINGS_FILE):
+    if os.path.exists(SETTINGS_FILE):
+        try:
             with open(SETTINGS_FILE, "r") as f:
-                _MEMORY = json.load(f)
-    except Exception as e:
-        logger.warning(f"Could not load settings from disk: {e}")
-        _MEMORY = {}
-    return _MEMORY
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
 
 def _save(data: dict):
-    global _MEMORY
-    _MEMORY = data
     try:
         with open(SETTINGS_FILE, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        logger.warning(f"Could not persist settings to disk: {e}")
+        logger.error(f"Could not save settings: {e}")
 
 
-def get_balance(chat_id: int) -> float | None:
+def get_balance(chat_id: int):
     data = _load()
     val  = data.get(str(chat_id))
-    return float(val) if val is not None else None
+    if val:
+        return float(val)
+    # Fallback — use ACCOUNT_BALANCE env var set in Railway
+    env_bal = os.environ.get("ACCOUNT_BALANCE")
+    if env_bal:
+        try:
+            return float(env_bal)
+        except Exception:
+            pass
+    return None
 
 
 def set_balance(chat_id: int, balance: float):
