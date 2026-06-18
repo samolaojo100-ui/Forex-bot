@@ -2,22 +2,29 @@ import aiohttp
 import asyncio
 import logging
 import pandas as pd
-from config import TWELVEDATA_API_KEY, TIMEFRAMES
+from config import TIMEFRAMES
+import os
 
 logger = logging.getLogger(__name__)
 BASE_URL = "https://api.twelvedata.com"
 
+def get_api_key():
+    from config import TWELVEDATA_API_KEY
+    return TWELVEDATA_API_KEY or os.getenv("TWELVEDATA_API_KEY", "")
+
 async def fetch_ohlcv(session, symbol, interval, outputsize=100):
+    api_key = get_api_key()
     symbol_fmt = symbol.replace("/", "")
     url = (
         f"{BASE_URL}/time_series"
         f"?symbol={symbol_fmt}&interval={interval}"
-        f"&outputsize={outputsize}&apikey={TWELVEDATA_API_KEY}&format=JSON"
+        f"&outputsize={outputsize}&apikey={api_key}&format=JSON"
     )
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             data = await resp.json()
             if data.get("status") == "error" or "values" not in data:
+                logger.warning(f"API error for {symbol} {interval}: {data.get('message','')}")
                 return None
             df = pd.DataFrame(data["values"])
             for col in ["open", "high", "low", "close"]:
