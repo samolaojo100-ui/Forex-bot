@@ -40,7 +40,7 @@ async def fetch_all_timeframes(symbol, session):
     results = {}
     for i, tf in enumerate(TIMEFRAMES):
         if i > 0:
-            await asyncio.sleep(8)
+            await asyncio.sleep(10)
         df = await fetch_ohlcv(session, symbol, tf)
         if df is None or len(df) < 50:
             return None
@@ -52,7 +52,7 @@ async def fetch_multiple_pairs(pairs):
     async with aiohttp.ClientSession() as session:
         for i, pair in enumerate(pairs):
             if i > 0:
-                await asyncio.sleep(8)
+                await asyncio.sleep(10)
             logger.info(f"Fetching {pair}...")
             tfs = await fetch_all_timeframes(pair, session)
             if tfs:
