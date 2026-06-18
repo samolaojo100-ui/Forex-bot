@@ -40,12 +40,11 @@ def _format_symbol(symbol: str) -> str:
     """
     TwelveData requires the slash for BOTH forex and crypto symbols
     (e.g. "EUR/USD", "BTC/USD") — it is NOT just visual formatting.
-    Stripping the slash (symbol.replace("/", "")) sends TwelveData a
-    symbol it does not recognize, which is why every single crypto
-    pair was failing with a "symbol missing or invalid" error: the
-    slash was being removed before the request was ever sent.
-    This function now just normalizes spacing/case, and explicitly
-    does NOT remove the slash.
+    Stripping the slash sends TwelveData a symbol it does not recognize,
+    which is why every crypto pair was failing with a "symbol missing
+    or invalid" error: the slash was being removed before the request
+    was ever sent. This function normalizes spacing/case only, and
+    explicitly does NOT remove the slash.
     """
     return symbol.strip().upper()
 
@@ -100,7 +99,19 @@ async def fetch_ohlcv(session, symbol, interval, outputsize=100, _retry_count=0)
             df = pd.DataFrame(data["values"])
             for col in ["open", "high", "low", "close"]:
                 df[col] = pd.to_numeric(df[col])
-            df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0)
+
+            # Not every TwelveData response includes a "volume" column —
+            # most forex and many crypto pairs simply omit it entirely.
+            # df.get("volume", 0) then returns the plain int 0 (not a
+            # Series), and calling .fillna(0) on an int crashes with
+            # "'int' object has no attribute 'fillna'". Build the column
+            # explicitly instead of chaining .fillna onto whatever
+            # .get() happens to return.
+            if "volume" in df.columns:
+                df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+            else:
+                df["volume"] = 0.0
+
             df = df.sort_values("datetime").reset_index(drop=True)
             return df
 
