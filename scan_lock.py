@@ -65,3 +65,47 @@ def status() -> tuple[bool, int, str]:
             return False, 0, ""
         elapsed = int(time.time() - _scan_started_at)
         return True, elapsed, _scan_label
+
+
+class ScanGuard:
+    """
+    Class-based wrapper around try_acquire()/release(), for code that
+    prefers a context-manager style instead of calling the bare functions.
+
+    Usage:
+        guard = ScanGuard("auto_scan")
+        if not guard.acquired:
+            return  # someone else is scanning, skip this run
+        try:
+            ... do the scan ...
+        finally:
+            guard.release()
+
+    Or as a context manager (skips the block entirely if not acquired):
+        with ScanGuard("auto_scan") as guard:
+            if not guard.acquired:
+                return
+            ... do the scan ...
+        # lock is released automatically on exit
+    """
+
+    def __init__(self, label: str = "scan"):
+        self.label = label
+        self.acquired, self.wait_seconds = try_acquire(label)
+
+    def release(self) -> None:
+        if self.acquired:
+            release()
+            self.acquired = False
+
+    def __enter__(self) -> "ScanGuard":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.release()
+
+    async def __aenter__(self) -> "ScanGuard":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.release()
