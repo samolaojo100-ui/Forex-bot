@@ -13,7 +13,6 @@ from formatter import format_signal, format_no_signal, format_scanning, format_s
 from session_manager import get_current_session, minutes_to_next_scan, is_weekend
 from user_settings import get_balance, set_balance
 from config import ALL_PAIRS, CRYPTO_PAIRS
-from indicators import compute_indicators
 from news_filter import get_upcoming_events
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal_line = f"💰 Balance: *${balance:,.2f}*" if balance else "💰 Balance: _not set — use /setbalance_"
 
     await update.message.reply_text(
-        "🤖 *Forex & Crypto Signal Bot*\n\n"
+        "🤖 *TrendGuard AI Signal Bot*\n\n"
         f"{bal_line}\n\n"
         "📌 *Commands:*\n"
         "/signal — full forex + crypto scan\n"
@@ -36,10 +35,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setbalance — set your balance\n"
         "/status — session info\n"
         "/help — full guide\n\n"
-        "✅ 47 Forex + 12 Crypto pairs\n"
-        "✅ 5 timeframes · 5 indicators each\n"
+        "✅ 7 Forex + 12 Crypto pairs\n"
+        "✅ 4 timeframes · 5 indicators each\n"
         "✅ Auto-signals every 30 min\n"
-        "✅ News filter — skips high-impact events",
+        "✅ News filter — skips high-impact events\n"
+        "✅ Daily trend gate + S/R proximity check",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -79,7 +79,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ── Run the scan (await because scan_all_pairs is now async) ──
+        # ── await is required — scan_all_pairs is async ──
         signals = await scan_all_pairs(data_map, account_balance=balance)
 
         if not signals:
@@ -101,7 +101,6 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         for i, sig in enumerate(top, 1):
-            # sig could be a valid Signal or a NO TRADE dict
             if isinstance(sig, dict) and sig.get("no_trade"):
                 await context.bot.send_message(
                     chat_id,
@@ -152,15 +151,13 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for pair, tfs in data_map.items():
             try:
-                # await because analyze_pair is now async
+                # ── await is required — analyze_pair is async ──
                 sig = await analyze_pair(pair, tfs, balance)
 
                 if sig and not isinstance(sig, dict):
-                    # Valid signal
                     all_signals.append(sig)
                 else:
-                    # No trade or blocked — force a signal for crypto
-                    # (crypto runs 24/7, we always want to show something)
+                    # Force a signal for crypto — always show something
                     forced = await force_analyze_pair(pair, tfs, balance)
                     if forced:
                         all_signals.append(forced)
@@ -276,13 +273,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /setbalance — set balance\n"
         "• /status — session + upcoming news\n\n"
         "*Signal format shows:*\n"
-        "✅ 5 timeframes (5M/15M/1H/4H/Daily)\n"
+        "✅ 4 timeframes (15M/1H/4H/Daily)\n"
         "✅ Per-TF direction, entry, SL, TP, lot\n"
         "✅ RSI, Stochastic, MACD values\n"
-        "✅ Overall conviction % and pair score\n"
-        "✅ News filter — blocks high-impact events\n"
-        "✅ S/R proximity warning\n"
-        "✅ Daily trend gate",
+        "✅ TP1, TP2, TP3 + Invalidation level\n"
+        "✅ Market Regime + Session quality\n"
+        "✅ Conviction % and pair score\n"
+        "✅ News filter + Daily trend gate",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -293,7 +290,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_name, is_active = get_current_session()
     bal_text = f"${balance:,.2f}" if balance else "Not set"
 
-    # Fetch upcoming high-impact events for display
     try:
         upcoming = await get_upcoming_events(hours=24)
     except Exception:
