@@ -1,4 +1,3 @@
-# data_fetcher.py
 import aiohttp
 import asyncio
 import logging
@@ -9,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL         = "https://api.twelvedata.com"
 RATE_LIMIT_DELAY = 12.0
-PAIR_DELAY       = 2.0
+PAIR_DELAY       = 3.0
 
 
 async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100):
@@ -26,7 +25,8 @@ async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100
                 code = data.get("code", "")
                 msg  = data.get("message", "")
                 if code == 429 or "rate limit" in str(msg).lower():
-                    logger.warning(f"⛔ Rate limit hit on {symbol} {interval}")
+                    logger.warning(f"⛔ Rate limit hit on {symbol} {interval} — waiting 60s")
+                    await asyncio.sleep(60)
                 else:
                     logger.warning(f"API error {symbol} {interval}: {msg}")
                 return None
@@ -49,7 +49,7 @@ async def fetch_all_timeframes(symbol: str):
         for tf in TIMEFRAMES:
             df = await fetch_ohlcv(session, symbol, tf)
             if df is None or len(df) < 50:
-                logger.warning(f"{symbol} {tf}: insufficient data — skipping")
+                logger.warning(f"{symbol} {tf}: insufficient data — skipping pair")
                 return None
             results[tf] = df
             await asyncio.sleep(RATE_LIMIT_DELAY)
