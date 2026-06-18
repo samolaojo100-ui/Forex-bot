@@ -1,51 +1,67 @@
-import asyncio
+"""
+scan_lock.py — Global scan lock with hard auto-expiry.
+
+Prevents two scans (manual + auto, or two manual commands) from running
+at the same time and stepping on each other / hitting rate limits twice.
+
+CRITICAL DIFFERENCE vs a naive lock: this one can NEVER get stuck forever.
+Even if a scan crashes without releasing the lock, the lock auto-expires
+after LOCK_TIMEOUT_SECONDS and the next command will simply take over.
+"""
+
 import time
+import threading
 
-# Single shared lock used by /signal, /crypto, AND the background
-# auto_scan scheduler job. Without this, a manual command and the
-# 30-minute auto-scan (or two manual taps in a row) can fire TwelveData
-# requests at the same time. Each individual loop paces itself under
-# the per-minute rate limit on its own, but two loops running at once
-# doubles the effective request rate and blows through the limit even
-# though daily credits are nowhere close to exhausted.
-_scan_lock = asyncio.Lock()
-_last_scan_label = None
-_last_scan_started_at = None
+LOCK_TIMEOUT_SECONDS = 90  # hard ceiling — no scan should ever take longer than this
+
+_lock = threading.Lock()
+_scan_started_at: float | None = None
+_scan_label: str = ""
 
 
-def is_scan_running() -> bool:
-    return _scan_lock.locked()
-
-
-def scan_status_text() -> str:
-    if not is_scan_running() or _last_scan_started_at is None:
-        return ""
-    elapsed = int(time.monotonic() - _last_scan_started_at)
-    return f"A scan ({_last_scan_label}) is already running, started {elapsed}s ago."
-
-
-class ScanGuard:
-    """Async context manager: acquires the shared scan lock, or raises
-    RuntimeError immediately (non-blocking) if a scan is already running.
-    Usage:
-        async with ScanGuard("crypto"):
-            ... do the fetch ...
+def try_acquire(label: str = "scan") -> tuple[bool, int]:
     """
+    Try to start a scan.
 
-    def __init__(self, label: str):
-        self.label = label
+    Returns (acquired, seconds_remaining_on_existing_lock).
+    - If acquired is True, you now hold the lock — call release() when done,
+      ideally in a try/finally.
+    - If acquired is False, someone else is scanning; seconds_remaining
+      tells you roughly how much longer until it auto-expires.
+    """
+    global _scan_started_at, _scan_label
 
-    async def __aenter__(self):
-        global _last_scan_label, _last_scan_started_at
-        if _scan_lock.locked():
-            raise RuntimeError(scan_status_text())
-        await _scan_lock.acquire()
-        _last_scan_label = self.label
-        _last_scan_started_at = time.monotonic()
-        return self
+    with _lock:
+        now = time.time()
 
-    async def __aexit__(self, exc_type, exc, tb):
-        global _last_scan_started_at
-        _last_scan_started_at = None
-        _scan_lock.release()
-        return False
+        if _scan_started_at is None:
+            _scan_started_at = now
+            _scan_label = label
+            return True, 0
+
+        elapsed = now - _scan_started_at
+
+        if elapsed >= LOCK_TIMEOUT_SECONDS:
+            # Previous scan never released — treat it as dead and take over.
+            _scan_started_at = now
+            _scan_label = label
+            return True, 0
+
+        return False, int(LOCK_TIMEOUT_SECONDS - elapsed)
+
+
+def release() -> None:
+    """Release the lock. Safe to call even if you don't hold it."""
+    global _scan_started_at, _scan_label
+    with _lock:
+        _scan_started_at = None
+        _scan_label = ""
+
+
+def status() -> tuple[bool, int, str]:
+    """Returns (is_running, seconds_elapsed, label) without acquiring."""
+    with _lock:
+        if _scan_started_at is None:
+            return False, 0, ""
+        elapsed = int(time.time() - _scan_started_at)
+        return True, elapsed, _scan_label
