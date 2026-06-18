@@ -5,10 +5,7 @@ import pandas as pd
 from config import TWELVEDATA_API_KEY, TIMEFRAMES
 
 logger = logging.getLogger(__name__)
-
-BASE_URL         = "https://api.twelvedata.com"
-RATE_LIMIT_DELAY = 12.0
-PAIR_DELAY       = 3.0
+BASE_URL = "https://api.twelvedata.com"
 
 
 async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100):
@@ -22,10 +19,10 @@ async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             data = await resp.json()
             if data.get("status") == "error" or "values" not in data:
+                msg = data.get("message", "")
                 code = data.get("code", "")
-                msg  = data.get("message", "")
                 if code == 429 or "rate limit" in str(msg).lower():
-                    logger.warning(f"⛔ Rate limit hit on {symbol} {interval} — waiting 60s")
+                    logger.warning(f"⛔ Rate limit — waiting 60s")
                     await asyncio.sleep(60)
                 else:
                     logger.warning(f"API error {symbol} {interval}: {msg}")
@@ -43,27 +40,35 @@ async def fetch_ohlcv(session, symbol: str, interval: str, outputsize: int = 100
         return None
 
 
-async def fetch_all_timeframes(symbol: str):
-    async with aiohttp.ClientSession() as session:
-        results = {}
-        for tf in TIMEFRAMES:
-            df = await fetch_ohlcv(session, symbol, tf)
-            if df is None or len(df) < 50:
-                logger.warning(f"{symbol} {tf}: insufficient data — skipping pair")
-                return None
-            results[tf] = df
-            await asyncio.sleep(RATE_LIMIT_DELAY)
-        return results
-
-
 async def fetch_multiple_pairs(pairs: list) -> dict:
+    """
+    One shared session for ALL pairs and ALL timeframes.
+    8 seconds between EVERY single request — guaranteed under 8/min.
+    """
     data_map = {}
-    total    = len(pairs)
-    for i, pair in enumerate(pairs, 1):
-        logger.info(f"Fetching {pair} ({i}/{total})...")
-        tfs = await fetch_all_timeframes(pair)
-        if tfs:
-            data_map[pair] = tfs
-        await asyncio.sleep(PAIR_DELAY)
-    logger.info(f"Fetch complete — {len(data_map)}/{total} pairs returned data")
+    total = len(pairs)
+
+    # ONE session for everything
+    async with aiohttp.ClientSession() as session:
+        for i, pair in enumerate(pairs, 1):
+            logger.info(f"Fetching {pair} ({i}/{total})...")
+            results = {}
+            failed = False
+
+            for tf in TIMEFRAMES:
+                # Wait BEFORE every request except the very first
+                if results or i > 1:
+                    await asyncio.sleep(8)
+
+                df = await fetch_ohlcv(session, pair, tf)
+                if df is None or len(df) < 50:
+                    logger.warning(f"{pair} {tf}: failed — skipping pair")
+                    failed = True
+                    break
+                results[tf] = df
+
+            if not failed and results:
+                data_map[pair] = results
+
+    logger.info(f"Fetch complete — {len(data_map)}/{total} pairs")
     return data_map
