@@ -49,6 +49,7 @@ class Signal:
     news_reason:   str       = ""
     no_trade:      bool      = False
     no_trade_reasons: list   = field(default_factory=list)
+    warnings:      list      = field(default_factory=list)
 
 
 def is_crypto(pair: str) -> bool:
@@ -84,23 +85,24 @@ def decimal_places(pair: str, price: float) -> int:
 
 def score_indicators(row: pd.Series, direction: str) -> tuple:
     """
-    Score all 8 indicators. Returns (score, signals_dict).
-    score = number of indicators confirming direction.
+    Score all 8 indicators. Returns (buy_votes, sell_votes, signals_dict).
     """
     buy_votes  = 0
     sell_votes = 0
     signals    = {}
 
-    # 1. RSI
+    # 1. RSI — non-overlapping bands, momentum + reversal zones
     rsi = row["rsi"]
-    if 40 <= rsi <= 65:
-        buy_votes += 1;  signals["rsi"] = "BUY"
-    elif 35 <= rsi <= 60:
-        sell_votes += 1; signals["rsi"] = "SELL"
-    elif rsi < 30:
-        buy_votes += 1;  signals["rsi"] = "BUY"
+    if rsi < 30:
+        buy_votes += 1;  signals["rsi"] = "BUY"          # oversold reversal
+    elif 30 <= rsi < 45:
+        buy_votes += 1;  signals["rsi"] = "BUY"          # bullish momentum building
+    elif 45 <= rsi <= 55:
+        signals["rsi"] = "NEUTRAL"                        # no edge
+    elif 55 < rsi <= 70:
+        sell_votes += 1; signals["rsi"] = "SELL"         # bearish momentum building
     elif rsi > 70:
-        sell_votes += 1; signals["rsi"] = "SELL"
+        sell_votes += 1; signals["rsi"] = "SELL"         # overbought reversal
     else:
         signals["rsi"] = "NEUTRAL"
 
@@ -198,10 +200,19 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     """
     Full analysis of one pair across all timeframes.
     Returns a Signal object.
+
+    Gate philosophy:
+      - HARD gates (no_trade_reasons) only fire for genuinely disqualifying
+        conditions: active news block, insufficient confluence, strong
+        counter-trend on daily, or entry sitting inside the S/R zone.
+      - Everything softer becomes a `warnings` entry + confidence penalty,
+        so a pair isn't thrown out just for being imperfect on one axis.
     """
     from news_filter import check_news_block
 
     no_trade_reasons = []
+    warnings         = []
+    confidence_penalty = 0
 
     # ── Compute indicators on all timeframes ─────────────────────────
     try:
@@ -210,7 +221,7 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
         logger.warning(f"{pair} indicators error: {e}")
         return None
 
-    # ── News gate ────────────────────────────────────────────────────
+    # ── News gate (hard) ─────────────────────────────────────────────
     news_blocked, news_reason = await check_news_block(pair)
     if news_blocked:
         no_trade_reasons.append(news_reason)
@@ -236,15 +247,26 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     direction  = "BUY" if tf_buy_votes >= tf_sell_votes else "SELL"
     mtf_aligned = abs(tf_buy_votes - tf_sell_votes) >= 2
 
-    # ── Daily trend gate ─────────────────────────────────────────────
+    # ── Daily trend check (soft penalty, hard gate only if strong) ───
     df_daily = processed.get("1day")
     if df_daily is not None:
-        r_daily   = df_daily.iloc[-1]
+        r_daily       = df_daily.iloc[-1]
         bv_d, sv_d, _ = score_indicators(r_daily, direction)
-        if direction == "BUY" and sv_d > bv_d:
-            no_trade_reasons.append("📉 Daily trend is bearish — counter-trend BUY")
-        elif direction == "SELL" and bv_d > sv_d:
-            no_trade_reasons.append("📈 Daily trend is bullish — counter-trend SELL")
+        daily_adx     = float(r_daily.get("adx", 0))
+
+        counter_trend = (direction == "BUY" and sv_d > bv_d) or \
+                         (direction == "SELL" and bv_d > sv_d)
+
+        if counter_trend:
+            if daily_adx > 25:
+                # Strong, established daily trend running opposite — hard block
+                no_trade_reasons.append(
+                    f"📉 Strong daily trend opposes {direction} (ADX {daily_adx:.0f})"
+                )
+            else:
+                # Weak/ambiguous daily trend — just a warning + penalty
+                warnings.append(f"⚠️ Daily trend leans against {direction} (weak, ADX {daily_adx:.0f})")
+                confidence_penalty += 10
 
     # ── Score on 1H ──────────────────────────────────────────────────
     buy_votes, sell_votes, ind_signals = score_indicators(row, direction)
@@ -253,22 +275,39 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     # ── Confidence % ────────────────────────────────────────────────
     tf_agree   = tf_buy_votes if direction == "BUY" else tf_sell_votes
     confidence = int(((confluence / 8) * 0.5 + (tf_agree / total_tfs) * 0.5) * 100)
+    confidence = max(0, confidence - confidence_penalty)
     confidence = min(confidence, 99)
 
-    # ── Minimum confidence gate ──────────────────────────────────────
+    # ── Minimum confluence gate (hard) ───────────────────────────────
     if confluence < 3:
         no_trade_reasons.append(f"📊 Only {confluence}/8 indicators confirm — need ≥3")
 
-    # ── S/R check ────────────────────────────────────────────────────
+    # ── S/R check (soft unless price is essentially on top of the level) ─
     support, resistance = support_resistance(df_1h)
-    sr_warning = ""
-    threshold  = 0.003
-    if direction == "BUY" and (resistance - close) / close < threshold:
-        sr_warning = f"⚠️ Entry near resistance ({resistance:.{dec}f})"
-        no_trade_reasons.append(sr_warning)
-    elif direction == "SELL" and (close - support) / close < threshold:
-        sr_warning = f"⚠️ Entry near support ({support:.{dec}f})"
-        no_trade_reasons.append(sr_warning)
+    warn_threshold  = 0.003   # 0.3% — flag as a warning
+    hard_threshold  = 0.001   # 0.1% — actually inside the zone, hard block
+
+    if direction == "BUY":
+        dist_pct = (resistance - close) / close if close > 0 else 1
+        if dist_pct < hard_threshold:
+            no_trade_reasons.append(f"⚠️ Entry sitting on resistance ({resistance:.{dec}f})")
+        elif dist_pct < warn_threshold:
+            warnings.append(f"⚠️ Entry near resistance ({resistance:.{dec}f})")
+            confidence_penalty += 5
+            confidence = max(0, confidence - 5)
+    else:
+        dist_pct = (close - support) / close if close > 0 else 1
+        if dist_pct < hard_threshold:
+            no_trade_reasons.append(f"⚠️ Entry sitting on support ({support:.{dec}f})")
+        elif dist_pct < warn_threshold:
+            warnings.append(f"⚠️ Entry near support ({support:.{dec}f})")
+            confidence_penalty += 5
+            confidence = max(0, confidence - 5)
+
+    # ── Overall confidence floor (hard) ──────────────────────────────
+    # Replaces "stack of independent hard gates" with a single combined check.
+    if confidence < 40:
+        no_trade_reasons.append(f"📊 Combined confidence too low ({confidence}%) — need ≥40%")
 
     # ── ATR-based SL/TP ──────────────────────────────────────────────
     atr   = max(float(row["atr"]), close * 0.001)
@@ -355,6 +394,7 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
         news_reason=news_reason,
         no_trade=len(no_trade_reasons) > 0,
         no_trade_reasons=no_trade_reasons,
+        warnings=warnings,
     )
 
 
