@@ -20,6 +20,16 @@ from news_filter import get_upcoming_events
 logger    = logging.getLogger(__name__)
 ASK_BAL   = 1
 
+# Minimum confidence required for a signal to actually be shown to the user.
+# Applies uniformly to /signal, /crypto, and the auto-scan job — nothing below
+# this bar gets sent, regardless of which path triggered the scan.
+MIN_CONFIDENCE_TO_SHOW = 65
+
+
+def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_SHOW) -> list:
+    """Keep only signals at or above the confidence threshold."""
+    return [s for s in signals if s.confidence >= min_confidence]
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -38,6 +48,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ 8 indicators · 4 timeframes\n"
         "✅ TP1, TP2, TP3 + Invalidation\n"
         "✅ News filter + Daily trend gate\n"
+        f"✅ Only shows signals ≥ {MIN_CONFIDENCE_TO_SHOW}% confidence\n"
         "✅ Auto-signals every 30 min",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -78,6 +89,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         signals = await scan_pairs(data_map, balance)
+        signals = filter_by_confidence(signals)
 
         if not signals:
             await msg.edit_text(format_no_signal(), parse_mode=ParseMode.MARKDOWN)
@@ -89,7 +101,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id,
             f"📊 *TrendGuard AI — Scan Results*\n"
-            f"Found *{len(signals)}* signal(s) — top {len(top)} shown\n"
+            f"Found *{len(signals)}* signal(s) ≥{MIN_CONFIDENCE_TO_SHOW}% — top {len(top)} shown\n"
             f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -133,8 +145,11 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Force signals — crypto always shows results
+        # force_scan_pairs ignores the engine's internal gates (news/trend/S-R)
+        # so crypto always produces a result — but we still apply our own
+        # confidence floor here so low-quality setups don't get sent.
         signals = await force_scan_pairs(data_map, balance)
+        signals = filter_by_confidence(signals)
 
         if not signals:
             await msg.edit_text(format_no_signal(), parse_mode=ParseMode.MARKDOWN)
@@ -146,7 +161,7 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id,
             f"₿ *TrendGuard AI — Crypto Scan*\n"
-            f"Scanned *{len(data_map)}* pairs — top {len(top)} shown\n"
+            f"Scanned *{len(data_map)}* pairs — *{len(signals)}* ≥{MIN_CONFIDENCE_TO_SHOW}% — top {len(top)} shown\n"
             f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -236,7 +251,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Market Regime + Session quality\n"
         "✅ Candle patterns\n"
         "✅ News filter (blocks FOMC, NFP etc)\n"
-        "✅ Daily trend gate\n\n"
+        "✅ Daily trend gate\n"
+        f"✅ Only shown if confidence ≥ {MIN_CONFIDENCE_TO_SHOW}%\n\n"
         "*Pairs covered:*\n"
         "EUR/USD · GBP/USD · USD/JPY · USD/CHF\n"
         "AUD/USD · USD/CAD · XAU/USD (Gold)\n"
