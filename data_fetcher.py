@@ -41,16 +41,23 @@ async def _throttle():
 
 
 async def fetch_ohlcv(session, symbol, interval, outputsize=100):
-    symbol_fmt = symbol.replace("/", "")
-    url = (
-        f"{BASE_URL}/time_series"
-        f"?symbol={symbol_fmt}&interval={interval}"
-        f"&outputsize={outputsize}&apikey={TWELVEDATA_API_KEY}&format=JSON"
-    )
+    # FIX: TwelveData expects the slash in the symbol (e.g. "BTC/USD",
+    # "EUR/USD"). Stripping it (old: symbol.replace("/", "")) produces
+    # a symbol the API doesn't recognize, causing every single request
+    # to fail with "symbol parameter is missing or invalid."
+    # aiohttp's `params=` handles URL-encoding the "/" correctly.
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "outputsize": outputsize,
+        "apikey": TWELVEDATA_API_KEY,
+        "format": "JSON",
+    }
+    url = f"{BASE_URL}/time_series"
     try:
         await _throttle()
 
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             data = await resp.json()
 
             if data.get("status") == "error" or "values" not in data:
