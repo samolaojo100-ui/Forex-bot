@@ -227,7 +227,11 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
         no_trade_reasons.append(news_reason)
 
     # ── 1H for primary analysis ──────────────────────────────────────
-    df_1h = processed.get("1h") or processed.get("4h") or list(processed.values())[-1]
+    df_1h = processed.get("1h")
+    if df_1h is None:
+        df_1h = processed.get("4h")
+    if df_1h is None:
+        df_1h = list(processed.values())[-1]
     row   = df_1h.iloc[-1]
     close = float(row["close"])
     dec   = decimal_places(pair, close)
