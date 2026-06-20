@@ -26,10 +26,14 @@ SESSION_OVERLAPS = [
 FOREX_PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
     "AUD/USD", "USD/CAD", "XAU/USD",
+    # Added: more majors + liquid crosses
+    "NZD/USD", "EUR/GBP", "GBP/JPY", "EUR/JPY",
 ]
 
 CRYPTO_PAIRS = [
     "BTC/USD", "ETH/USD", "BNB/USD", "SOL/USD",
+    # Added: high-volume additional crypto
+    "XRP/USD", "ADA/USD", "DOGE/USD",
 ]
 
 ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
