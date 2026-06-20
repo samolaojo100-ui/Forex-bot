@@ -26,9 +26,31 @@ def is_good_session() -> bool:
 
 
 def is_weekend() -> bool:
-    """Returns True if it's Saturday or Sunday UTC."""
-    day = datetime.now(timezone.utc).weekday()
-    return day >= 5  # 5=Saturday, 6=Sunday
+    """
+    Returns True if the Forex market is currently closed for the weekend.
+
+    Forex doesn't close at calendar midnight Saturday — it closes Friday
+    evening (~21:00 UTC, when the NY session ends) and reopens Sunday
+    evening (~21:00 UTC, when Sydney/Asia opens). A pure
+    `weekday() >= 5` check misses the Friday-evening and Sunday-evening
+    closed windows, which is what let Forex signals fire after Friday
+    close and before Sunday open.
+    """
+    now = datetime.now(timezone.utc)
+    day = now.weekday()  # 0=Monday ... 5=Saturday, 6=Sunday
+    hour = now.hour
+
+    FRIDAY_CLOSE_HOUR = 21   # Forex closes ~21:00 UTC Friday
+    SUNDAY_OPEN_HOUR  = 21   # Forex reopens ~21:00 UTC Sunday
+
+    if day == 4 and hour >= FRIDAY_CLOSE_HOUR:   # Friday after close
+        return True
+    if day == 5:                                  # all of Saturday
+        return True
+    if day == 6 and hour < SUNDAY_OPEN_HOUR:      # Sunday before reopen
+        return True
+
+    return False
 
 
 def minutes_to_next_scan() -> int:
