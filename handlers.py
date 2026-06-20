@@ -23,7 +23,7 @@ ASK_BAL   = 1
 # Minimum confidence required for a signal to actually be shown to the user.
 # Applies uniformly to /signal, /crypto, and the auto-scan job — nothing below
 # this bar gets sent, regardless of which path triggered the scan.
-MIN_CONFIDENCE_TO_SHOW = 65
+MIN_CONFIDENCE_TO_SHOW = 70
 
 
 def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_SHOW) -> list:
