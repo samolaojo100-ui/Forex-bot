@@ -7,6 +7,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_IDS  = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 
+# ── Access control ───────────────────────────────────────────────────
+# Only chat IDs in this list can use bot commands. Stored as an env var
+# so new approvals (via /approve) can be added without a redeploy.
+# Set OWNER_CHAT_ID to your own Telegram chat ID — you're always authorized.
+OWNER_CHAT_ID      = os.getenv("OWNER_CHAT_ID", "").strip()
+OWNER_USERNAME      = "SamOlaojo"  # shown to unauthorized users
+_extra_authorized   = [c.strip() for c in os.getenv("AUTHORIZED_USERS", "").split(",") if c.strip()]
+AUTHORIZED_USERS    = list({OWNER_CHAT_ID, *_extra_authorized}) if OWNER_CHAT_ID else _extra_authorized
+
 # ── TwelveData ───────────────────────────────────────────────────────
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 
