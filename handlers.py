@@ -13,8 +13,8 @@ from formatter import (
     format_scanning, format_status,
 )
 from session_manager import get_current_session, minutes_to_next_scan, is_weekend
-from user_settings import get_balance, set_balance
-from config import ALL_PAIRS, CRYPTO_PAIRS
+from user_settings import get_balance, set_balance, is_authorized, approve_user, list_approved_users
+from config import ALL_PAIRS, CRYPTO_PAIRS, OWNER_USERNAME, OWNER_CHAT_ID
 from news_filter import get_upcoming_events
 
 logger    = logging.getLogger(__name__)
@@ -31,7 +31,31 @@ def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_
     return [s for s in signals if s.confidence >= min_confidence]
 
 
+async def require_authorized(update: Update) -> bool:
+    """
+    Returns True if the sender is authorized to use bot commands.
+    If not, replies with a pending-approval message that includes their
+    chat ID (so they can send it to the owner) and the owner's @username,
+    then returns False so the calling handler can stop immediately.
+    """
+    chat_id = update.effective_chat.id
+    if is_authorized(chat_id):
+        return True
+
+    await update.message.reply_text(
+        "🔒 *Access Pending Approval*\n\n"
+        "This bot is private. To request access, message the owner "
+        f"@{OWNER_USERNAME} with your chat ID below:\n\n"
+        f"`{chat_id}`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return False
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_authorized(update):
+        return
+
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
     bal_line = f"💰 Balance: *${balance:,.2f}*" if balance else "💰 _Balance not set — use /setbalance_"
@@ -55,6 +79,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_authorized(update):
+        return
+
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
 
@@ -119,6 +146,9 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_authorized(update):
+        return
+
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
 
@@ -179,6 +209,9 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await require_authorized(update):
+        return ConversationHandler.END
+
     chat_id = update.effective_chat.id
     current = get_balance(chat_id)
     cur_txt = f"\n_Current: ${current:,.2f}_" if current else ""
@@ -237,6 +270,9 @@ def build_setbalance_handler() -> ConversationHandler:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_authorized(update):
+        return
+
     await update.message.reply_text(
         "📖 *TrendGuard AI — Help*\n\n"
         "*Commands:*\n"
@@ -262,6 +298,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_authorized(update):
+        return
+
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
     session_name, is_active = get_current_session()
@@ -274,5 +313,44 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only. Usage: /approve <chat_id>
+    Grants bot access to the given chat ID. The requester gets their own
+    chat ID from the "Access Pending Approval" message and sends it to
+    the owner via @username; the owner runs this command with that ID.
+    """
+    chat_id = update.effective_chat.id
+
+    if str(chat_id) != str(OWNER_CHAT_ID):
+        await update.message.reply_text(
+            "🔒 Only the bot owner can approve access requests."
+        )
+        return
+
+    args = context.args
+    if not args:
+        approved = list_approved_users()
+        approved_text = "\n".join(f"• `{c}`" for c in approved) if approved else "_none yet_"
+        await update.message.reply_text(
+            "*Usage:* `/approve <chat_id>`\n\n"
+            f"*Currently approved:*\n{approved_text}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    target_id = args[0].strip()
+    try:
+        approve_user(int(target_id))
+    except ValueError:
+        await update.message.reply_text("❌ Chat ID must be a number.")
+        return
+
+    await update.message.reply_text(
+        f"✅ Approved chat ID `{target_id}` — they can now use the bot.",
         parse_mode=ParseMode.MARKDOWN,
     )
