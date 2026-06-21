@@ -1,59 +1,104 @@
+import json
 import os
-from dotenv import load_dotenv
+import logging
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-# ── Telegram ─────────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-CHAT_IDS  = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
+# /tmp persists longer than /app on Railway
+SETTINGS_FILE = "/tmp/trendguard_settings.json"
+AUTH_FILE     = "/tmp/trendguard_authorized.json"
 
-# ── Access control ───────────────────────────────────────────────────
-# Only chat IDs in this list can use bot commands. Stored as an env var
-# so new approvals (via /approve) can be added without a redeploy.
-# Set OWNER_CHAT_ID to your own Telegram chat ID — you're always authorized.
-OWNER_CHAT_ID      = os.getenv("OWNER_CHAT_ID", "").strip()
-OWNER_USERNAME      = "SamOlaojo"  # shown to unauthorized users
-_extra_authorized   = [c.strip() for c in os.getenv("AUTHORIZED_USERS", "").split(",") if c.strip()]
-AUTHORIZED_USERS    = list({OWNER_CHAT_ID, *_extra_authorized}) if OWNER_CHAT_ID else _extra_authorized
 
-# ── TwelveData ───────────────────────────────────────────────────────
-TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
+def _load() -> dict:
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
-# ── Trading sessions (UTC hours) ─────────────────────────────────────
-SESSIONS = {
-    "Tokyo":    {"start": 0,  "end": 9},
-    "London":   {"start": 7,  "end": 16},
-    "New York": {"start": 12, "end": 21},
-}
 
-SESSION_OVERLAPS = [
-    {"name": "Tokyo/London Overlap",    "start": 7,  "end": 9},
-    {"name": "London/New York Overlap", "start": 12, "end": 16},
-]
+def _save(data: dict):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Could not save settings: {e}")
 
-# ── Pairs ─────────────────────────────────────────────────────────────
-FOREX_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "USD/CAD", "XAU/USD",
-    # Added: more majors + liquid crosses
-    "NZD/USD", "EUR/GBP", "GBP/JPY", "EUR/JPY",
-]
 
-CRYPTO_PAIRS = [
-    "BTC/USD", "ETH/USD", "BNB/USD", "SOL/USD",
-    # Added: high-volume additional crypto
-    "XRP/USD", "ADA/USD", "DOGE/USD",
-]
+def get_balance(chat_id: int):
+    data = _load()
+    val  = data.get(str(chat_id))
+    if val:
+        return float(val)
+    # Fallback to Railway env variable
+    env = os.environ.get("ACCOUNT_BALANCE")
+    if env:
+        try:
+            return float(env)
+        except Exception:
+            pass
+    return None
 
-ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
 
-# ── Timeframes ────────────────────────────────────────────────────────
-TIMEFRAMES = ["15min", "1h", "4h", "1day"]
+def set_balance(chat_id: int, balance: float):
+    data = _load()
+    data[str(chat_id)] = balance
+    _save(data)
 
-# ── Risk ─────────────────────────────────────────────────────────────
-ACCOUNT_BALANCE      = float(os.getenv("ACCOUNT_BALANCE", "1000"))
-RISK_PERCENT         = 1.0
-DEFAULT_RR_RATIO     = 2.0
 
-# ── Scheduler ────────────────────────────────────────────────────────
-AUTO_SIGNAL_INTERVAL = 30  # minutes
+# ── Access control ────────────────────────────────────────────────────
+# Approved chat IDs are stored separately from balance settings so that
+# editing one never risks corrupting the other. Combined with the
+# AUTHORIZED_USERS env var in config.py (which always stays authorized
+# even if /tmp is wiped on redeploy).
+
+def _load_auth() -> dict:
+    if os.path.exists(AUTH_FILE):
+        try:
+            with open(AUTH_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"approved": []}
+
+
+def _save_auth(data: dict):
+    try:
+        with open(AUTH_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Could not save auth list: {e}")
+
+
+def is_authorized(chat_id: int) -> bool:
+    from config import AUTHORIZED_USERS  # imported lazily to avoid circular imports
+
+    chat_id_str = str(chat_id)
+    if chat_id_str in AUTHORIZED_USERS:
+        return True
+
+    data = _load_auth()
+    return chat_id_str in data.get("approved", [])
+
+
+def approve_user(chat_id: int):
+    data = _load_auth()
+    chat_id_str = str(chat_id)
+    if chat_id_str not in data["approved"]:
+        data["approved"].append(chat_id_str)
+        _save_auth(data)
+
+
+def revoke_user(chat_id: int):
+    data = _load_auth()
+    chat_id_str = str(chat_id)
+    if chat_id_str in data["approved"]:
+        data["approved"].remove(chat_id_str)
+        _save_auth(data)
+
+
+def list_approved_users() -> list:
+    data = _load_auth()
+    return data.get("approved", [])
