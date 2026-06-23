@@ -1,8 +1,8 @@
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes, ConversationHandler,
-    CommandHandler, MessageHandler, filters,
+    CommandHandler, MessageHandler, filters, CallbackQueryHandler,
 )
 from telegram.constants import ParseMode
 
@@ -16,13 +16,12 @@ from session_manager import get_current_session, minutes_to_next_scan, is_weeken
 from user_settings import get_balance, set_balance, is_authorized, approve_user, list_approved_users
 from config import ALL_PAIRS, CRYPTO_PAIRS, OWNER_USERNAME, OWNER_CHAT_ID
 from news_filter import get_upcoming_events
+from stocks_engine import fetch_stock_pairs, STOCK_PAIRS
 
-logger    = logging.getLogger(__name__)
-ASK_BAL   = 1
+logger  = logging.getLogger(__name__)
+ASK_BAL = 1
 
 # Minimum confidence required for a signal to actually be shown to the user.
-# Applies uniformly to /signal, /crypto, and the auto-scan job — nothing below
-# this bar gets sent, regardless of which path triggered the scan.
 MIN_CONFIDENCE_TO_SHOW = 70
 
 
@@ -31,26 +30,107 @@ def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_
     return [s for s in signals if s.confidence >= min_confidence]
 
 
+# ── ACCESS CONTROL ───────────────────────────────────────────────────────────
+
 async def require_authorized(update: Update) -> bool:
     """
-    Returns True if the sender is authorized to use bot commands.
-    If not, replies with a pending-approval message that includes their
-    chat ID (so they can send it to the owner) and the owner's @username,
-    then returns False so the calling handler can stop immediately.
+    Returns True if the sender is authorized.
+    If not, replies with a pending-approval message AND pings the owner
+    with Approve / Cancel buttons automatically.
     """
+    user    = update.effective_user
     chat_id = update.effective_chat.id
+
     if is_authorized(chat_id):
         return True
 
+    # Tell the user to wait
     await update.message.reply_text(
         "🔒 *Access Pending Approval*\n\n"
-        "This bot is private. To request access, message the owner "
-        f"@{OWNER_USERNAME} with your chat ID below:\n\n"
-        f"`{chat_id}`",
+        "This bot is private. Your request has been sent to the owner.\n\n"
+        f"👤 You can also message: @{OWNER_USERNAME}\n\n"
+        f"_Your Chat ID:_ `{chat_id}`\n\n"
+        "✅ You will be notified once approved.",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+    # Notify owner with inline buttons
+    keyboard = [[
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}"),
+        InlineKeyboardButton("❌ Reject",  callback_data=f"cancel_{chat_id}"),
+    ]]
+    try:
+        await update.get_bot().send_message(
+            chat_id=OWNER_CHAT_ID,
+            text=(
+                "🔔 *New Access Request*\n\n"
+                f"👤 Name: {user.full_name}\n"
+                f"🆔 Chat ID: `{chat_id}`\n"
+                f"📛 Username: @{user.username or 'none'}\n\n"
+                "Approve or reject below:"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        logger.warning(f"Could not notify owner of access request: {e}")
+
     return False
 
+
+async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner taps ✅ Approve or ❌ Reject on the notification message."""
+    query   = update.callback_query
+    await query.answer()
+
+    # Only owner can action these buttons
+    if str(query.from_user.id) != str(OWNER_CHAT_ID):
+        await query.answer("🔒 Only the bot owner can do this.", show_alert=True)
+        return
+
+    action, user_id_str = query.data.split("_", 1)
+    target_id = int(user_id_str)
+
+    if action == "approve":
+        approve_user(target_id)
+        await query.edit_message_text(
+            f"✅ Chat ID `{target_id}` has been *approved*.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=(
+                    "🎉 *Access Approved!*\n\n"
+                    "Welcome to *TrendGuard AI* 🚀\n\n"
+                    "You now have full access to live trading signals.\n"
+                    "Type /start to begin."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify approved user {target_id}: {e}")
+
+    elif action == "cancel":
+        await query.edit_message_text(
+            f"❌ Chat ID `{target_id}` has been *rejected*.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=(
+                    "❌ *Access Denied*\n\n"
+                    "Your request to use TrendGuard AI was not approved.\n"
+                    f"Contact @{OWNER_USERNAME} if you think this is a mistake."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify rejected user {target_id}: {e}")
+
+
+# ── COMMANDS ─────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
@@ -66,6 +146,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Commands:*\n"
         "/signal — full scan (forex + gold + crypto)\n"
         "/crypto — crypto only (24/7)\n"
+        "/stocks — US stocks scan (weekdays)\n"
         "/setbalance — set your trading balance\n"
         "/status — session info + upcoming news\n"
         "/help — how to use this bot\n\n"
@@ -175,9 +256,6 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # force_scan_pairs ignores the engine's internal gates (news/trend/S-R)
-        # so crypto always produces a result — but we still apply our own
-        # confidence floor here so low-quality setups don't get sent.
         signals = await force_scan_pairs(data_map, balance)
         signals = filter_by_confidence(signals)
 
@@ -205,6 +283,89 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"crypto_command error: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
+
+
+async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /stocks — scans top US stocks using the same 8-indicator confluence engine.
+    Only runs on weekdays (NYSE hours). Uses TwelveData just like forex/crypto.
+    """
+    if not await require_authorized(update):
+        return
+
+    chat_id = update.effective_chat.id
+    balance = get_balance(chat_id)
+
+    if not balance:
+        await update.message.reply_text(
+            "⚠️ *No balance set.*\n\nUse /setbalance first.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_weekend():
+        await update.message.reply_text(
+            "📅 *NYSE closed (Weekend)*\n\n"
+            "Stock markets are closed on weekends.\n"
+            "Use /crypto for 24/7 signals.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    msg = await update.message.reply_text(
+        "📈 *Scanning US Stocks...*\n\n"
+        "🔍 Analysing AAPL · TSLA · NVDA · AMZN · MSFT\n"
+        "META · GOOGL · AMD · NFLX · JPM\n\n"
+        "⏳ _Please wait..._",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    try:
+        data_map = await fetch_stock_pairs(STOCK_PAIRS)
+
+        if not data_map:
+            await msg.edit_text(
+                "❌ Could not fetch stock data.\n\n"
+                "TwelveData API limit may be reached or NYSE is closed.\n"
+                "Try again during market hours (9:30AM–4PM EST, Mon–Fri).",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        signals = await scan_pairs(data_map, balance)
+        signals = filter_by_confidence(signals)
+
+        if not signals:
+            await msg.edit_text(
+                "⏸ *No Stock Signals Right Now*\n\n"
+                "No setups met the ≥70% confidence threshold.\n"
+                "_Market may be consolidating or choppy._\n\n"
+                "Try again in 30 minutes.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        top = signals[:3]
+        await msg.delete()
+
+        await context.bot.send_message(
+            chat_id,
+            f"📈 *TrendGuard AI — Stocks Scan*\n"
+            f"Scanned *{len(data_map)}* stocks — *{len(signals)}* ≥{MIN_CONFIDENCE_TO_SHOW}% — top {len(top)} shown\n"
+            f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        for i, sig in enumerate(top, 1):
+            await context.bot.send_message(
+                chat_id,
+                format_signal(sig, i, len(top)),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+    except Exception as e:
+        logger.error(f"stocks_command error: {e}", exc_info=True)
         await msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
 
 
@@ -248,7 +409,7 @@ async def setbalance_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         f"✅ *Balance saved: ${balance:,.2f}*\n\n"
         f"Risk per trade: `${risk:,.2f}` (1%)\n\n"
-        f"Use /signal or /crypto for live signals!",
+        f"Use /signal, /crypto or /stocks for live signals!",
         parse_mode=ParseMode.MARKDOWN,
     )
     return ConversationHandler.END
@@ -278,6 +439,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Commands:*\n"
         "• /signal — scan all pairs (weekdays)\n"
         "• /crypto — crypto only (24/7)\n"
+        "• /stocks — US stocks scan (weekdays)\n"
         "• /setbalance — set your balance\n"
         "• /status — current session + news\n\n"
         "*Signal includes:*\n"
@@ -285,14 +447,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
         "✅ TP1, TP2, TP3 + Partial TP + Invalidation\n"
         "✅ Market Regime + Session quality\n"
-        "✅ Candle patterns\n"
         "✅ News filter (blocks FOMC, NFP etc)\n"
         "✅ Daily trend gate\n"
         f"✅ Only shown if confidence ≥ {MIN_CONFIDENCE_TO_SHOW}%\n\n"
-        "*Pairs covered:*\n"
+        "*Forex/Gold pairs:*\n"
         "EUR/USD · GBP/USD · USD/JPY · USD/CHF\n"
-        "AUD/USD · USD/CAD · XAU/USD (Gold)\n"
-        "BTC · ETH · BNB · SOL",
+        "AUD/USD · USD/CAD · XAU/USD (Gold)\n\n"
+        "*Crypto pairs:*\n"
+        "BTC · ETH · BNB · SOL\n\n"
+        "*US Stocks:*\n"
+        "AAPL · TSLA · NVDA · AMZN · MSFT\n"
+        "META · GOOGL · AMD · NFLX · JPM",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -320,16 +485,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Owner-only. Usage: /approve <chat_id>
-    Grants bot access to the given chat ID. The requester gets their own
-    chat ID from the "Access Pending Approval" message and sends it to
-    the owner via @username; the owner runs this command with that ID.
+    Manual fallback — the inline buttons handle approvals automatically.
     """
     chat_id = update.effective_chat.id
 
     if str(chat_id) != str(OWNER_CHAT_ID):
-        await update.message.reply_text(
-            "🔒 Only the bot owner can approve access requests."
-        )
+        await update.message.reply_text("🔒 Only the bot owner can approve access requests.")
         return
 
     args = context.args
@@ -354,3 +515,18 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Approved chat ID `{target_id}` — they can now use the bot.",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+    # Notify the approved user
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_id),
+            text=(
+                "🎉 *Access Approved!*\n\n"
+                "Welcome to *TrendGuard AI* 🚀\n\n"
+                "You now have full access to live trading signals.\n"
+                "Type /start to begin."
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        logger.warning(f"Could not notify approved user: {e}")
