@@ -2,7 +2,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes, ConversationHandler,
-    CommandHandler, MessageHandler, filters, CallbackQueryHandler,
+    CommandHandler, MessageHandler, filters,
 )
 from telegram.constants import ParseMode
 
@@ -13,7 +13,11 @@ from formatter import (
     format_scanning, format_status,
 )
 from session_manager import get_current_session, minutes_to_next_scan, is_weekend
-from user_settings import get_balance, set_balance, is_authorized, approve_user, list_approved_users
+from user_settings import (
+    get_balance, set_balance, is_authorized,
+    approve_user, revoke_user, list_approved_users,
+    add_pending, remove_pending, next_pending, list_pending,
+)
 from config import ALL_PAIRS, CRYPTO_PAIRS, OWNER_USERNAME, OWNER_CHAT_ID
 from news_filter import get_upcoming_events
 from stocks_engine import fetch_stock_pairs, STOCK_PAIRS
@@ -21,22 +25,20 @@ from stocks_engine import fetch_stock_pairs, STOCK_PAIRS
 logger  = logging.getLogger(__name__)
 ASK_BAL = 1
 
-# Minimum confidence required for a signal to actually be shown to the user.
 MIN_CONFIDENCE_TO_SHOW = 70
 
 
 def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_SHOW) -> list:
-    """Keep only signals at or above the confidence threshold."""
     return [s for s in signals if s.confidence >= min_confidence]
 
 
-# ── ACCESS CONTROL ───────────────────────────────────────────────────────────
+# ── ACCESS CONTROL ────────────────────────────────────────────────────────────
 
 async def require_authorized(update: Update) -> bool:
     """
-    Returns True if the sender is authorized.
-    If not, replies with a pending-approval message AND pings the owner
-    with Approve / Cancel buttons automatically.
+    Returns True if sender is authorized.
+    If not: tells them to wait, saves them to pending queue,
+    and pings the owner with Approve / Reject buttons.
     """
     user    = update.effective_user
     chat_id = update.effective_chat.id
@@ -44,10 +46,13 @@ async def require_authorized(update: Update) -> bool:
     if is_authorized(chat_id):
         return True
 
+    # Save to pending queue
+    add_pending(chat_id, user.full_name, user.username or "none")
+
     # Tell the user to wait
     await update.message.reply_text(
         "🔒 *Access Pending Approval*\n\n"
-        "This bot is private. Your request has been sent to the owner.\n\n"
+        "Your request has been sent to the owner.\n\n"
         f"👤 You can also message: @{OWNER_USERNAME}\n\n"
         f"_Your Chat ID:_ `{chat_id}`\n\n"
         "✅ You will be notified once approved.",
@@ -67,23 +72,23 @@ async def require_authorized(update: Update) -> bool:
                 f"👤 Name: {user.full_name}\n"
                 f"🆔 Chat ID: `{chat_id}`\n"
                 f"📛 Username: @{user.username or 'none'}\n\n"
-                "Approve or reject below:"
+                "Tap to approve or reject:"
             ),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        logger.warning(f"Could not notify owner of access request: {e}")
+        logger.warning(f"Could not notify owner: {e}")
 
     return False
 
 
 async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Owner taps ✅ Approve or ❌ Reject on the notification message."""
-    query   = update.callback_query
+    query = update.callback_query
     await query.answer()
 
-    # Only owner can action these buttons
+    # Only owner can use these buttons
     if str(query.from_user.id) != str(OWNER_CHAT_ID):
         await query.answer("🔒 Only the bot owner can do this.", show_alert=True)
         return
@@ -94,7 +99,7 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
     if action == "approve":
         approve_user(target_id)
         await query.edit_message_text(
-            f"✅ Chat ID `{target_id}` has been *approved*.",
+            f"✅ *Approved!*\n\nChat ID `{target_id}` can now use the bot.",
             parse_mode=ParseMode.MARKDOWN,
         )
         try:
@@ -112,8 +117,9 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
             logger.warning(f"Could not notify approved user {target_id}: {e}")
 
     elif action == "cancel":
+        remove_pending(target_id)
         await query.edit_message_text(
-            f"❌ Chat ID `{target_id}` has been *rejected*.",
+            f"❌ *Rejected.*\n\nChat ID `{target_id}` has been denied.",
             parse_mode=ParseMode.MARKDOWN,
         )
         try:
@@ -121,7 +127,7 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
                 chat_id=target_id,
                 text=(
                     "❌ *Access Denied*\n\n"
-                    "Your request to use TrendGuard AI was not approved.\n"
+                    "Your request was not approved.\n"
                     f"Contact @{OWNER_USERNAME} if you think this is a mistake."
                 ),
                 parse_mode=ParseMode.MARKDOWN,
@@ -130,7 +136,7 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
             logger.warning(f"Could not notify rejected user {target_id}: {e}")
 
 
-# ── COMMANDS ─────────────────────────────────────────────────────────────────
+# ── COMMANDS ──────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
@@ -213,11 +219,9 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
             parse_mode=ParseMode.MARKDOWN,
         )
-
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id,
-                format_signal(sig, i, len(top)),
+                chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -273,11 +277,9 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
             parse_mode=ParseMode.MARKDOWN,
         )
-
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id,
-                format_signal(sig, i, len(top)),
+                chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -287,10 +289,6 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /stocks — scans top US stocks using the same 8-indicator confluence engine.
-    Only runs on weekdays (NYSE hours). Uses TwelveData just like forex/crypto.
-    """
     if not await require_authorized(update):
         return
 
@@ -315,7 +313,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(
         "📈 *Scanning US Stocks...*\n\n"
-        "🔍 Analysing AAPL · TSLA · NVDA · AMZN · MSFT\n"
+        "🔍 AAPL · TSLA · NVDA · AMZN · MSFT\n"
         "META · GOOGL · AMD · NFLX · JPM\n\n"
         "⏳ _Please wait..._",
         parse_mode=ParseMode.MARKDOWN,
@@ -327,8 +325,8 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not data_map:
             await msg.edit_text(
                 "❌ Could not fetch stock data.\n\n"
-                "TwelveData API limit may be reached or NYSE is closed.\n"
-                "Try again during market hours (9:30AM–4PM EST, Mon–Fri).",
+                "API limit may be reached or NYSE is closed.\n"
+                "Try during market hours (9:30AM–4PM EST, Mon–Fri).",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -340,8 +338,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(
                 "⏸ *No Stock Signals Right Now*\n\n"
                 "No setups met the ≥70% confidence threshold.\n"
-                "_Market may be consolidating or choppy._\n\n"
-                "Try again in 30 minutes.",
+                "_Market may be consolidating._\n\nTry again in 30 minutes.",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -356,17 +353,109 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
             parse_mode=ParseMode.MARKDOWN,
         )
-
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id,
-                format_signal(sig, i, len(top)),
+                chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
     except Exception as e:
         logger.error(f"stocks_command error: {e}", exc_info=True)
         await msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
+
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only.
+
+    /approve          → shows next pending user with Approve / Reject buttons
+    /approve <id>     → directly approves that chat ID
+    /approve list     → shows all pending + approved users
+    """
+    chat_id = update.effective_chat.id
+
+    if str(chat_id) != str(OWNER_CHAT_ID):
+        await update.message.reply_text("🔒 Only the bot owner can use this.")
+        return
+
+    args = context.args
+
+    # ── /approve list ──────────────────────────────────────────
+    if args and args[0].lower() == "list":
+        pending  = list_pending()
+        approved = list_approved_users()
+
+        p_text = "\n".join(
+            f"• `{p['id']}` — {p['name']} (@{p['username']})"
+            for p in pending
+        ) if pending else "_none_"
+
+        a_text = "\n".join(f"• `{c}`" for c in approved) if approved else "_none_"
+
+        await update.message.reply_text(
+            f"📋 *Pending ({len(pending)}):*\n{p_text}\n\n"
+            f"✅ *Approved ({len(approved)}):*\n{a_text}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── /approve <chat_id> ─────────────────────────────────────
+    if args:
+        target_id = args[0].strip()
+        try:
+            approve_user(int(target_id))
+        except ValueError:
+            await update.message.reply_text("❌ Chat ID must be a number.")
+            return
+
+        await update.message.reply_text(
+            f"✅ Approved `{target_id}` — they can now use the bot.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_id),
+                text=(
+                    "🎉 *Access Approved!*\n\n"
+                    "Welcome to *TrendGuard AI* 🚀\n\n"
+                    "You now have full access to live trading signals.\n"
+                    "Type /start to begin."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify approved user: {e}")
+        return
+
+    # ── /approve (no args) → show next pending with buttons ────
+    pending = next_pending()
+
+    if not pending:
+        approved = list_approved_users()
+        a_text = "\n".join(f"• `{c}`" for c in approved) if approved else "_none yet_"
+        await update.message.reply_text(
+            "✅ *No pending requests.*\n\n"
+            f"*Approved users:*\n{a_text}\n\n"
+            "_Tip: /approve list — see everyone_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    keyboard = [[
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{pending['id']}"),
+        InlineKeyboardButton("❌ Reject",  callback_data=f"cancel_{pending['id']}"),
+    ]]
+
+    total = len(list_pending())
+    await update.message.reply_text(
+        f"🔔 *Pending Request* ({total} waiting)\n\n"
+        f"👤 Name: {pending['name']}\n"
+        f"🆔 Chat ID: `{pending['id']}`\n"
+        f"📛 Username: @{pending['username']}\n\n"
+        "Approve or reject?",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -480,53 +569,3 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
         parse_mode=ParseMode.MARKDOWN,
     )
-
-
-async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Owner-only. Usage: /approve <chat_id>
-    Manual fallback — the inline buttons handle approvals automatically.
-    """
-    chat_id = update.effective_chat.id
-
-    if str(chat_id) != str(OWNER_CHAT_ID):
-        await update.message.reply_text("🔒 Only the bot owner can approve access requests.")
-        return
-
-    args = context.args
-    if not args:
-        approved = list_approved_users()
-        approved_text = "\n".join(f"• `{c}`" for c in approved) if approved else "_none yet_"
-        await update.message.reply_text(
-            "*Usage:* `/approve <chat_id>`\n\n"
-            f"*Currently approved:*\n{approved_text}",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    target_id = args[0].strip()
-    try:
-        approve_user(int(target_id))
-    except ValueError:
-        await update.message.reply_text("❌ Chat ID must be a number.")
-        return
-
-    await update.message.reply_text(
-        f"✅ Approved chat ID `{target_id}` — they can now use the bot.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    # Notify the approved user
-    try:
-        await context.bot.send_message(
-            chat_id=int(target_id),
-            text=(
-                "🎉 *Access Approved!*\n\n"
-                "Welcome to *TrendGuard AI* 🚀\n\n"
-                "You now have full access to live trading signals.\n"
-                "Type /start to begin."
-            ),
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    except Exception as e:
-        logger.warning(f"Could not notify approved user: {e}")
