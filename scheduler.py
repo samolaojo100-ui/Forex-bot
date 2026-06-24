@@ -18,7 +18,7 @@ scheduler = AsyncIOScheduler()
 MIN_CONFIDENCE_TO_SHOW = 70
 
 # Only signals AT OR ABOVE this threshold get posted to the group
-GROUP_MIN_CONFIDENCE = 85
+GROUP_MIN_CONFIDENCE = 80
 
 # Your Telegram group chat ID
 GROUP_CHAT_ID = "-3884983020"
