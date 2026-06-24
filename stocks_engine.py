@@ -1,84 +1,107 @@
 """
 stocks_engine.py — TrendGuard AI
 Fetches real OHLCV data for US stocks from TwelveData.
-Uses the same fetch pattern as data_fetcher.py so the
-signal_engine works on stocks with zero changes.
+Returns data in the same {pair: {tf: df}} structure as
+data_fetcher.py so scan_pairs() works unchanged.
 """
 
 import asyncio
 import logging
+import pandas as pd
 import aiohttp
 
-from config import TWELVEDATA_API_KEY  # same key your forex bot uses
+from config import TWELVEDATA_API_KEY
 
 logger = logging.getLogger(__name__)
 
-# ── Stock symbols to scan (TwelveData format) ───────────────
 STOCK_PAIRS = [
-    "AAPL",   # Apple
-    "TSLA",   # Tesla
-    "NVDA",   # NVIDIA
-    "AMZN",   # Amazon
-    "MSFT",   # Microsoft
-    "META",   # Meta
-    "GOOGL",  # Alphabet
-    "AMD",    # AMD
-    "NFLX",   # Netflix
-    "JPM",    # JPMorgan
+    "AAPL", "TSLA", "NVDA", "AMZN", "MSFT",
+    "META", "GOOGL", "AMD", "NFLX", "JPM",
 ]
 
-TIMEFRAME   = "1h"      # same as your forex signals
-OUTPUT_SIZE = 100       # enough candles for all 8 indicators
+# Timeframes to fetch — matches your forex bot exactly
+TIMEFRAMES  = ["15min", "1h", "4h", "1day"]
+OUTPUT_SIZE = 100
 BASE_URL    = "https://api.twelvedata.com/time_series"
 
 
-async def _fetch_one_stock(session: aiohttp.ClientSession, symbol: str) -> tuple[str, list | None]:
-    """Fetch OHLCV candles for a single stock symbol."""
+async def _fetch_one_tf(
+    session: aiohttp.ClientSession,
+    symbol: str,
+    interval: str,
+) -> tuple[str, str, pd.DataFrame | None]:
+    """Fetch one timeframe for one stock symbol."""
     params = {
-        "symbol":      symbol,
-        "interval":    TIMEFRAME,
-        "outputsize":  OUTPUT_SIZE,
-        "apikey":      TWELVEDATA_API_KEY,
-        "format":      "JSON",
+        "symbol":     symbol,
+        "interval":   interval,
+        "outputsize": OUTPUT_SIZE,
+        "apikey":     TWELVEDATA_API_KEY,
+        "format":     "JSON",
     }
     try:
-        async with session.get(BASE_URL, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.get(
+            BASE_URL, params=params,
+            timeout=aiohttp.ClientTimeout(total=15)
+        ) as resp:
             data = await resp.json()
 
             if data.get("status") == "error":
-                logger.warning(f"TwelveData error for {symbol}: {data.get('message')}")
-                return symbol, None
+                logger.warning(f"TwelveData error {symbol}/{interval}: {data.get('message')}")
+                return symbol, interval, None
 
             values = data.get("values")
             if not values:
-                logger.warning(f"No values returned for stock {symbol}")
-                return symbol, None
+                return symbol, interval, None
 
-            # Reverse so oldest candle is first (same as data_fetcher.py)
-            return symbol, list(reversed(values))
+            # Convert to DataFrame — same structure as data_fetcher.py
+            df = pd.DataFrame(list(reversed(values)))
+            df.rename(columns={
+                "datetime": "time",
+                "open":     "open",
+                "high":     "high",
+                "low":      "low",
+                "close":    "close",
+                "volume":   "volume",
+            }, inplace=True)
+
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df.dropna(subset=["open", "high", "low", "close"], inplace=True)
+            return symbol, interval, df
 
     except Exception as e:
-        logger.error(f"Failed to fetch stock {symbol}: {e}")
-        return symbol, None
+        logger.error(f"Failed to fetch {symbol}/{interval}: {e}")
+        return symbol, interval, None
 
 
 async def fetch_stock_pairs(symbols: list[str]) -> dict:
     """
-    Fetch all stock symbols concurrently.
-    Returns a dict {symbol: [candles]} — same structure as fetch_multiple_pairs()
-    so scan_pairs() works unchanged.
+    Fetch all timeframes for all symbols concurrently.
+    Returns {symbol: {"1h": df, "4h": df, "1day": df, "15min": df}}
+    — identical structure to fetch_multiple_pairs() in data_fetcher.py.
     """
-    results = {}
+    results = {sym: {} for sym in symbols}
 
     async with aiohttp.ClientSession() as session:
-        tasks = [_fetch_one_stock(session, sym) for sym in symbols]
+        tasks = [
+            _fetch_one_tf(session, sym, tf)
+            for sym in symbols
+            for tf in TIMEFRAMES
+        ]
         responses = await asyncio.gather(*tasks)
 
-    for symbol, candles in responses:
-        if candles:
-            results[symbol] = candles
-        else:
-            logger.warning(f"Skipping {symbol} — no data")
+    for symbol, interval, df in responses:
+        if df is not None and len(df) >= 30:
+            results[symbol][interval] = df
 
-    logger.info(f"Fetched {len(results)}/{len(symbols)} stocks successfully")
-    return results
+    # Only keep symbols that have at least 1h data
+    final = {
+        sym: tfs
+        for sym, tfs in results.items()
+        if "1h" in tfs
+    }
+
+    logger.info(f"Fetched {len(final)}/{len(symbols)} stocks with valid data")
+    return final
