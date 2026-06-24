@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from signal_agents import generate_agents
 
 DIR_EMOJI = {"BUY": "🟢 BULLISH", "SELL": "🔴 BEARISH"}
 IND_EMOJI = {"BUY": "🟢", "SELL": "🔴", "NEUTRAL": "⚪"}
@@ -9,12 +10,15 @@ def fmt_indicator(name: str, value: str, signal: str) -> str:
 
 
 def format_signal(sig, index: int = 1, total: int = 1) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    d   = DIR_EMOJI.get(sig.direction, sig.direction)
-    mtf = "✅ Aligned" if sig.mtf_aligned else "⚠️ Mixed"
+    now    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    d      = DIR_EMOJI.get(sig.direction, sig.direction)
+    mtf    = "✅ Aligned" if sig.mtf_aligned else "⚠️ Mixed"
+    agents = generate_agents(sig)
 
     # Confidence label
-    if sig.confidence >= 75:
+    if sig.confidence >= 85:
+        conf_label = "ELITE ⭐"
+    elif sig.confidence >= 75:
         conf_label = "VERY HIGH ✅"
     elif sig.confidence >= 60:
         conf_label = "HIGH 🟢"
@@ -26,17 +30,31 @@ def format_signal(sig, index: int = 1, total: int = 1) -> str:
     # Candle pattern line
     candle_line = f"\n🕯️ Pattern: *{sig.candle_pattern}*" if sig.candle_pattern else ""
 
+    # Warnings block
+    warn_block = ""
+    if sig.warnings:
+        warn_lines = "\n".join(f"  {w}" for w in sig.warnings)
+        warn_block = f"\n⚠️ *Warnings:*\n{warn_lines}\n"
+
+    # Data quality bar
+    dq    = agents.data_quality
+    filled = int(dq / 10)
+    empty  = 10 - filled
+    dq_bar = "█" * filled + "░" * empty
+
     msg = (
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 *{sig.pair}* — {d}\n"
         f"⏰ {now} | {sig.asset_type}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"\n"
-        f"🎯 *Confidence: {sig.confidence}%* — {conf_label}\n"
+        f"🎯 Confidence: *{sig.confidence}%* — {conf_label}\n"
+        f"💚 Signal Health: *{agents.health}* {agents.health_emoji}\n"
         f"📐 Confluence: *{sig.confluence}/8* indicators confirm\n"
         f"🔀 MTF: {mtf}\n"
+        f"📊 Data Quality: [{dq_bar}] {dq}%\n"
         f"{candle_line}\n"
-        f"\n"
+        f"{warn_block}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 *Trade Plan* | R:R {sig.rr_ratio}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -59,16 +77,32 @@ def format_signal(sig, index: int = 1, total: int = 1) -> str:
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔬 *Technical Indicators*\n"
-        f"{fmt_indicator('RSI(14)',      f'{sig.rsi}',           'BUY' if sig.rsi < 50 else 'SELL')}\n"
-        f"{fmt_indicator('MACD(12,26)',  '',                     sig.macd_signal)}\n"
-        f"{fmt_indicator('Stoch(9,6)',   '',                     sig.stoch_signal)}\n"
-        f"{fmt_indicator('BB %B',        '',                     sig.bb_signal)}\n"
-        f"{fmt_indicator('ADX(14)',      f'{sig.adx}',           'BUY' if sig.adx > 25 else 'NEUTRAL')}\n"
-        f"{fmt_indicator('CCI(14)',      '',                     sig.cci_signal)}\n"
-        f"{fmt_indicator('Williams %R',  '',                     sig.williams_signal)}\n"
+        f"{fmt_indicator('RSI(14)',     f'{sig.rsi}',  'BUY' if sig.rsi < 50 else 'SELL')}\n"
+        f"{fmt_indicator('MACD(12,26)', '',            sig.macd_signal)}\n"
+        f"{fmt_indicator('Stoch(9,6)',  '',            sig.stoch_signal)}\n"
+        f"{fmt_indicator('BB %B',       '',            sig.bb_signal)}\n"
+        f"{fmt_indicator('ADX(14)',     f'{sig.adx}',  'BUY' if sig.adx > 25 else 'NEUTRAL')}\n"
+        f"{fmt_indicator('CCI(14)',     '',            sig.cci_signal)}\n"
+        f"{fmt_indicator('Williams %R', '',            sig.williams_signal)}\n"
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 _Signal {index}/{total} — TrendGuard AI_"
+        f"🤖 *Agent Analysis*\n"
+        f"\n"
+        f"📡 *Technical Agent:*\n"
+        f"_{agents.technical}_\n"
+        f"\n"
+        f"⚖️ *Risk Agent:*\n"
+        f"_{agents.risk}_\n"
+        f"\n"
+        f"🕐 *Session Agent:*\n"
+        f"_{agents.session}_\n"
+        f"\n"
+        f"😈 *Devil's Advocate:*\n"
+        f"_{agents.devils_advocate}_\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 _Signal {index}/{total} — TrendGuard AI_\n"
+        f"⚠️ _Not financial advice. Always manage your risk._"
     )
 
     if sig.news_reason:
@@ -103,7 +137,8 @@ def format_scanning(crypto_only: bool = False) -> str:
     pairs = "4 crypto pairs" if crypto_only else "7 forex + 4 crypto pairs"
     return (
         f"🔄 *Scanning {pairs}…*\n\n"
-        f"Running 8 indicators × 4 timeframes.\n\n"
+        f"Running 8 indicators × 4 timeframes.\n"
+        f"🤖 Agent analysis loading...\n\n"
         f"⏳ Please wait…"
     )
 
@@ -128,5 +163,6 @@ def format_status(session: str, active: bool, mins: int,
         f"{events_text}\n\n"
         f"💱 Forex: EUR/USD GBP/USD USD/JPY USD/CHF AUD/USD USD/CAD\n"
         f"🥇 Gold: XAU/USD\n"
-        f"₿ Crypto: BTC ETH BNB SOL"
+        f"₿ Crypto: BTC ETH BNB SOL\n"
+        f"📈 Stocks: AAPL TSLA NVDA AMZN MSFT META GOOGL AMD NFLX JPM"
     )
