@@ -163,7 +163,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, format_signal(sig, i, len(top)),
+                chat_id, await format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -221,7 +221,7 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, format_signal(sig, i, len(top)),
+                chat_id, await format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -299,7 +299,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, format_signal(sig, i, len(top)),
+                chat_id, await format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -364,7 +364,7 @@ async def oil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, format_signal(sig, i, len(top)),
+                chat_id, await format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -429,7 +429,7 @@ async def commodities_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, format_signal(sig, i, len(top)),
+                chat_id, await format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -578,13 +578,4 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
-    session_name, is_active = get_current_session()
-    bal_text = f"${balance:,.2f}" if balance else "Not set"
-    try:
-        upcoming = await get_upcoming_events(hours=24)
-    except Exception:
-        upcoming = []
-    await update.message.reply_text(
-        format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    session_name, is_active = get_curre
