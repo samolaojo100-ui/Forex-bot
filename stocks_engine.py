@@ -52,12 +52,12 @@ ALL_STOCK_INSTRUMENTS = STOCK_PAIRS + OIL_PAIRS + COMMODITY_PAIRS
 # TwelveData symbol mapping for oil/commodities
 # (TwelveData uses different symbols for some instruments)
 SYMBOL_MAP = {
-    "WTI/USD":    "WTI",
-    "BRENT/USD":  "BRENT",
+    "WTI/USD":    "USOIL",
+    "BRENT/USD":  "UKOIL",
     "NATGAS/USD": "NATGAS",
     "XAG/USD":    "XAG/USD",
     "XPT/USD":    "XPT/USD",
-    "COPPER/USD": "COPPER/USD",
+    "COPPER/USD": "XCU/USD",
 }
 
 # Asset type labels for signal messages
