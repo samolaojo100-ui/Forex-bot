@@ -569,18 +569,39 @@ def build_setbalance_handler() -> ConversationHandler:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
         return
-    await update.message.reply_text(
-        "📖 *TrendGuard AI — Help*\n\n"
-        "*Commands:*\n"
-        "• /signal — scan all pairs (weekdays)\n"
-        "• /crypto — crypto only (24/7)\n"
-        "• /stocks — US stocks scan\n"
-        "• /oil — WTI · Brent · Natural Gas\n"
-        "• /commodities — Silver · Platinum · Copper\n"
-        "• /setbalance — set your balance\n"
-        "• /status — current session + news\n\n"
-        "*Signal includes:*\n"
-        "- Direction + Confidence %\n"
-        "- Signal Health + Data Quality\n"
-        "- 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
-        "- TP1 / TP2 
+    text = (
+        "TrendGuard AI Help
+
+"
+        "Commands:
+"
+        "/signal forex and gold scan
+"
+        "/crypto crypto scan 24 hours
+"
+        "/stocks US stocks scan
+"
+        "/oil crude oil and gas
+"
+        "/commodities silver and metals
+"
+        "/setbalance set trading balance
+"
+        "/status session and news info
+
+"
+        "Each signal includes:
+"
+        "Direction and confidence score
+"
+        "Entry SL TP1 TP2 TP3
+"
+        "7 AI agents with Gemini reasoning
+"
+        "Coordinator verdict FIRE or NO TRADE
+"
+        "TP reachability and news sentiment
+"
+        "Only signals above 70 percent shown"
+    )
+  
