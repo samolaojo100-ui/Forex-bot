@@ -4,6 +4,7 @@ from telegram.ext import Application, CommandHandler
 from config import BOT_TOKEN
 from handlers import (
     start, signal_command, crypto_command, stocks_command,
+    oil_command, commodities_command,
     help_command, status_command,
     build_setbalance_handler,
     approve_command,
@@ -30,13 +31,15 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start",    start))
-    app.add_handler(CommandHandler("signal",   signal_command))
-    app.add_handler(CommandHandler("crypto",   crypto_command))
-    app.add_handler(CommandHandler("stocks",   stocks_command))
-    app.add_handler(CommandHandler("help",     help_command))
-    app.add_handler(CommandHandler("status",   status_command))
-    app.add_handler(CommandHandler("approve",  approve_command))
+    app.add_handler(CommandHandler("start",        start))
+    app.add_handler(CommandHandler("signal",       signal_command))
+    app.add_handler(CommandHandler("crypto",       crypto_command))
+    app.add_handler(CommandHandler("stocks",       stocks_command))
+    app.add_handler(CommandHandler("oil",          oil_command))
+    app.add_handler(CommandHandler("commodities",  commodities_command))
+    app.add_handler(CommandHandler("help",         help_command))
+    app.add_handler(CommandHandler("status",       status_command))
+    app.add_handler(CommandHandler("approve",      approve_command))
     app.add_handler(build_setbalance_handler())
 
     logger.info("🚀 Starting TrendGuard AI...")
