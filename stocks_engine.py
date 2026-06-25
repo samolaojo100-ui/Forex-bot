@@ -32,42 +32,34 @@ STOCK_PAIRS = [
     "SOFI",   # SoFi
 ]
 
-# ── Oil & Energy ──────────────────────────────────────────────────────────────
+# ── Oil & Energy ETFs (TwelveData free tier compatible) ──────────────────────
 OIL_PAIRS = [
-    "WTI/USD",    # West Texas Intermediate (US Oil)
-    "BRENT/USD",  # Brent Crude (Global benchmark)
-    "NATGAS/USD", # Natural Gas
+    "USO",   # United States Oil Fund (tracks WTI crude)
+    "BNO",   # United States Brent Oil Fund (tracks Brent crude)
+    "UNG",   # United States Natural Gas Fund
 ]
 
-# ── Commodities ───────────────────────────────────────────────────────────────
+# ── Commodity ETFs (TwelveData free tier compatible) ─────────────────────────
 COMMODITY_PAIRS = [
-    "XAG/USD",  # Silver
-    "XPT/USD",  # Platinum
-    "COPPER/USD", # Copper
+    "SLV",   # iShares Silver Trust
+    "PPLT",  # Aberdeen Platinum ETF
+    "CPER",  # United States Copper Index Fund
 ]
 
 # ── All instruments combined ──────────────────────────────────────────────────
 ALL_STOCK_INSTRUMENTS = STOCK_PAIRS + OIL_PAIRS + COMMODITY_PAIRS
 
-# TwelveData symbol mapping for oil/commodities
-# (TwelveData uses different symbols for some instruments)
-SYMBOL_MAP = {
-    "WTI/USD":    "USOIL",
-    "BRENT/USD":  "UKOIL",
-    "NATGAS/USD": "NATGAS",
-    "XAG/USD":    "XAG/USD",
-    "XPT/USD":    "XPT/USD",
-    "COPPER/USD": "XCU/USD",
-}
+# ETF symbols map directly — no remapping needed
+SYMBOL_MAP = {}
 
 # Asset type labels for signal messages
 ASSET_LABELS = {
-    "WTI/USD":    "OIL (WTI) 🛢️",
-    "BRENT/USD":  "OIL (Brent) 🛢️",
-    "NATGAS/USD": "NATURAL GAS ⛽",
-    "XAG/USD":    "SILVER 🥈",
-    "XPT/USD":    "PLATINUM 💎",
-    "COPPER/USD": "COPPER 🟤",
+    "USO":   "OIL WTI ETF",
+    "BNO":   "OIL BRENT ETF",
+    "UNG":   "NATURAL GAS ETF",
+    "SLV":   "SILVER ETF",
+    "PPLT":  "PLATINUM ETF",
+    "CPER":  "COPPER ETF",
 }
 
 TIMEFRAMES  = ["15min", "1h", "4h", "1day"]
