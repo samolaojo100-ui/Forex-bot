@@ -583,36 +583,4 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Direction + Confidence %\n"
         "- Signal Health + Data Quality\n"
         "- 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
-        "- TP1, TP2, TP3 + Partial TP + Invalidation\n"
-        "- 7 Agent Analysis:\n"
-        "   Technical, Risk, Session\n"
-        "   Devil's Advocate, News Sentiment\n"
-        "   Fundamental, Coordinator\n"
-        "- Coordinator Verdict: FIRE / CAUTION / NO TRADE\n"
-        "- TP Reachability Check\n"
-        "- News filter + Daily trend gate\n"
-        f"- Only shown if confidence >= {MIN_CONFIDENCE_TO_SHOW}%\n\n"
-        "*Forex/Gold:* EUR/USD · GBP/USD · XAU/USD + more\n"
-        "*Crypto:* BTC · ETH · BNB · SOL · XRP + more\n"
-        "*Stocks:* AAPL · TSLA · NVDA · AMZN + 10 more\n"
-        "*Oil:* WTI · Brent · Natural Gas\n"
-        "*Commodities:* Silver · Platinum · Copper",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_authorized(update):
-        return
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
-    session_name, is_active = get_current_session()
-    bal_text = f"${balance:,.2f}" if balance else "Not set"
-    try:
-        upcoming = await get_upcoming_events(hours=24)
-    except Exception:
-        upcoming = []
-    await update.message.reply_text(
-        format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+        "- TP1, TP2, 
