@@ -578,4 +578,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
-    session_name, is_active = get_curre
+    session_name, is_active = get_current_session()
+    bal_text = f"${balance:,.2f}" if balance else "Not set"
+    try:
+        upcoming = await get_upcoming_events(hours=24)
+    except Exception:
+        upcoming = []
+    await update.message.reply_text(
+        format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
+        parse_mode=ParseMode.MARKDOWN,
+    )
