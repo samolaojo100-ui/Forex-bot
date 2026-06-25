@@ -96,13 +96,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setbalance — set your trading balance\n"
         "/status — session info + upcoming news\n"
         "/help — how to use this bot\n\n"
-        "✅ 8 indicators · 4 timeframes · 7 AI agents\n"
-        "✅ TP1, TP2, TP3 + Invalidation\n"
-        "✅ News filter + TP reachability check\n"
-        "✅ Fundamental + News Sentiment agents\n"
-        "✅ Coordinator final verdict (FIRE / CAUTION / NO TRADE)\n"
-        f"✅ Only shows signals ≥ {MIN_CONFIDENCE_TO_SHOW}% confidence\n"
-        "✅ Auto-signals every 30 min",
+        "- 8 indicators, 4 timeframes, 7 AI agents\n"
+        "- TP1, TP2, TP3 + Invalidation\n"
+        "- News filter + TP reachability check\n"
+        "- Fundamental + News Sentiment agents\n"
+        "- Coordinator verdict (FIRE / CAUTION / NO TRADE)\n"
+        f"- Only shows signals >= {MIN_CONFIDENCE_TO_SHOW}% confidence\n"
+        "- Auto-signals every 30 min",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -580,7 +580,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /setbalance — set your balance\n"
         "• /status — current session + news\n\n"
         "*Signal includes:*\n"
-        "✅ Direction + Confidence %\n"
-        "✅ Signal Health + Data Quality\n"
-        "✅ 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
-        "✅ TP1
+        "- Direction + Confidence %\n"
+        "- Signal Health + Data Quality\n"
+        "- 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
+        "- TP1, TP2, 
