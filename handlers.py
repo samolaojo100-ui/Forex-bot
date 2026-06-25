@@ -583,4 +583,4 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Direction + Confidence %\n"
         "- Signal Health + Data Quality\n"
         "- 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
-        "- TP1, TP2, 
+        "- TP1 / TP2 
