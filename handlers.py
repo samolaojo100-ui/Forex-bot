@@ -573,4 +573,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         upcoming = []
 
     await update.message.reply_text(
-        format_status(session_name, is_active, minutes_to_next_scan(), ba
+        format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
+        parse_mode=ParseMode.MARKDOWN,
+    )
