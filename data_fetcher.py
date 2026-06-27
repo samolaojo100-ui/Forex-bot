@@ -10,12 +10,9 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.twelvedata.com"
 
 # --- Global rate limiter ---------------------------------------------------
-# TwelveData free tier allows ~8 requests/minute. This limiter is shared
-# across ALL calls to fetch_ohlcv, no matter where they're triggered from
-# (manual /signal, /check, or the auto-signaling background loop), so we
-# never burst past the cap even if multiple pairs are processed close
-# together in time.
-MAX_REQUESTS_PER_MINUTE = 8
+# TwelveData free tier allows 55 requests/minute (not 8).
+# Raised from 8 to 55 so all pairs fetch properly without timeout.
+MAX_REQUESTS_PER_MINUTE = 55
 _request_times = []
 _rate_lock = asyncio.Lock()
 
@@ -37,21 +34,18 @@ async def _throttle():
                 _request_times.pop(0)
 
         _request_times.append(time.monotonic())
-# -----------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 
 async def fetch_ohlcv(session, symbol, interval, outputsize=100):
-    # FIX: TwelveData expects the slash in the symbol (e.g. "BTC/USD",
-    # "EUR/USD"). Stripping it (old: symbol.replace("/", "")) produces
-    # a symbol the API doesn't recognize, causing every single request
-    # to fail with "symbol parameter is missing or invalid."
-    # aiohttp's `params=` handles URL-encoding the "/" correctly.
+    # TwelveData expects the slash in the symbol (e.g. "BTC/USD", "EUR/USD").
+    # aiohttp's params= handles URL-encoding correctly.
     params = {
-        "symbol": symbol,
-        "interval": interval,
+        "symbol":     symbol,
+        "interval":   interval,
         "outputsize": outputsize,
-        "apikey": TWELVEDATA_API_KEY,
-        "format": "JSON",
+        "apikey":     TWELVEDATA_API_KEY,
+        "format":     "JSON",
     }
     url = f"{BASE_URL}/time_series"
     try:
@@ -69,9 +63,7 @@ async def fetch_ohlcv(session, symbol, interval, outputsize=100):
             for col in ["open", "high", "low", "close"]:
                 df[col] = pd.to_numeric(df[col])
 
-            # df.get("volume", 0) returns a plain int when the "volume"
-            # column is missing, and int has no .fillna() method.
-            # TwelveData often omits volume for forex pairs - check first.
+            # TwelveData often omits volume for forex pairs — check first.
             if "volume" in df.columns:
                 df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
             else:
@@ -91,6 +83,7 @@ async def fetch_all_timeframes(symbol):
         for tf in TIMEFRAMES:
             df = await fetch_ohlcv(session, symbol, tf)
             if df is None or len(df) < 50:
+                logger.warning(f"{symbol} {tf}: insufficient data — skipping pair")
                 return None
             results[tf] = df
         return results
@@ -103,4 +96,6 @@ async def fetch_multiple_pairs(pairs):
         tfs = await fetch_all_timeframes(pair)
         if tfs:
             data_map[pair] = tfs
+        else:
+            logger.warning(f"{pair}: no complete data — excluded from scan")
     return data_map
