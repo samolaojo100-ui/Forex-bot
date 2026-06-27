@@ -7,7 +7,8 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 from data_fetcher import fetch_multiple_pairs
-from signal_engine import scan_pairs, force_scan_pairs
+from signal_engine import scan_pairs, force_scan_pairs, analyze_pair, score_indicators
+from indicators import compute_indicators
 from formatter import (
     format_signal, format_no_trade, format_no_signal,
     format_scanning, format_status,
@@ -20,10 +21,7 @@ from user_settings import (
 )
 from config import ALL_PAIRS, CRYPTO_PAIRS, OWNER_USERNAME, OWNER_CHAT_ID
 from news_filter import get_upcoming_events
-from stocks_engine import (
-    fetch_stock_pairs, fetch_oil_pairs, fetch_commodity_pairs,
-    STOCK_PAIRS, OIL_PAIRS, COMMODITY_PAIRS,
-)
+from stocks_engine import fetch_stock_pairs, STOCK_PAIRS
 
 logger  = logging.getLogger(__name__)
 ASK_BAL = 1
@@ -80,8 +78,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
         return
 
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
+    chat_id  = update.effective_chat.id
+    balance  = get_balance(chat_id)
     bal_line = f"💰 Balance: *${balance:,.2f}*" if balance else "💰 _Balance not set — use /setbalance_"
 
     await update.message.reply_text(
@@ -90,19 +88,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Commands:*\n"
         "/signal — full scan (forex + gold + crypto)\n"
         "/crypto — crypto only (24/7)\n"
-        "/stocks — US stocks scan\n"
-        "/oil — WTI · Brent · Natural Gas\n"
-        "/commodities — Silver · Platinum · Copper\n"
+        "/stocks — US stocks scan (weekdays)\n"
         "/setbalance — set your trading balance\n"
         "/status — session info + upcoming news\n"
         "/help — how to use this bot\n\n"
-        "- 8 indicators, 4 timeframes, 7 AI agents\n"
-        "- TP1, TP2, TP3 + Invalidation\n"
-        "- News filter + TP reachability check\n"
-        "- Fundamental + News Sentiment agents\n"
-        "- Coordinator verdict (FIRE / CAUTION / NO TRADE)\n"
-        f"- Only shows signals >= {MIN_CONFIDENCE_TO_SHOW}% confidence\n"
-        "- Auto-signals every 30 min",
+        "✅ 8 indicators · 4 timeframes\n"
+        "✅ TP1, TP2, TP3 + Invalidation\n"
+        "✅ News filter + Daily trend gate\n"
+        f"✅ Only shows signals ≥ {MIN_CONFIDENCE_TO_SHOW}% confidence\n"
+        "✅ Auto-signals every 30 min",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -163,7 +157,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, await format_signal(sig, i, len(top)),
+                chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -221,7 +215,7 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, await format_signal(sig, i, len(top)),
+                chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -256,9 +250,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "📈 *Scanning US Stocks...*\n\n"
         "🔍 AAPL · TSLA · NVDA · AMZN · MSFT\n"
-        "META · GOOGL · AMD · NFLX · JPM\n"
-        "COIN · BABA · UBER · PYPL · INTC\n"
-        "BAC · DIS · SHOP · PLTR · SOFI\n\n"
+        "META · GOOGL · AMD · NFLX · JPM\n\n"
         "⏳ _Please wait..._",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -281,7 +273,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not signals:
             await msg.edit_text(
                 "⏸ *No Stock Signals Right Now*\n\n"
-                "No setups met the ≥70% confidence threshold.\n"
+                "No setups met the confidence threshold.\n"
                 "_Market may be consolidating._\n\nTry again in 30 minutes.",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -299,142 +291,12 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         for i, sig in enumerate(top, 1):
             await context.bot.send_message(
-                chat_id, await format_signal(sig, i, len(top)),
+                chat_id, format_signal(sig, i, len(top)),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
     except Exception as e:
         logger.error(f"stocks_command error: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
-
-
-async def oil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_authorized(update):
-        return
-
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
-
-    if not balance:
-        await update.message.reply_text(
-            "⚠️ *No balance set.*\n\nUse /setbalance first.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    msg = await update.message.reply_text(
-        "🛢️ *Scanning Oil & Energy...*\n\n"
-        "🔍 WTI Crude · Brent Crude · Natural Gas\n\n"
-        "⏳ _Please wait..._",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    try:
-        data_map = await fetch_oil_pairs()
-
-        if not data_map:
-            await msg.edit_text(
-                "❌ Could not fetch oil data.\n\n"
-                "API limit may be reached. Try again shortly.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
-        signals = await scan_pairs(data_map, balance)
-        signals = filter_by_confidence(signals)
-
-        if not signals:
-            await msg.edit_text(
-                "⏸ *No Oil Signals Right Now*\n\n"
-                "No setups met the ≥70% confidence threshold.\n"
-                "_Market may be consolidating._\n\nTry again in 30 minutes.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
-        top = signals[:3]
-        await msg.delete()
-
-        await context.bot.send_message(
-            chat_id,
-            f"🛢️ *TrendGuard AI — Oil & Energy Scan*\n"
-            f"Scanned *{len(data_map)}* instruments — *{len(signals)}* ≥{MIN_CONFIDENCE_TO_SHOW}% — top {len(top)} shown\n"
-            f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        for i, sig in enumerate(top, 1):
-            await context.bot.send_message(
-                chat_id, await format_signal(sig, i, len(top)),
-                parse_mode=ParseMode.MARKDOWN,
-            )
-
-    except Exception as e:
-        logger.error(f"oil_command error: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
-
-
-async def commodities_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_authorized(update):
-        return
-
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
-
-    if not balance:
-        await update.message.reply_text(
-            "⚠️ *No balance set.*\n\nUse /setbalance first.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    msg = await update.message.reply_text(
-        "⚗️ *Scanning Commodities...*\n\n"
-        "🔍 Silver · Platinum · Copper\n\n"
-        "⏳ _Please wait..._",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    try:
-        data_map = await fetch_commodity_pairs()
-
-        if not data_map:
-            await msg.edit_text(
-                "❌ Could not fetch commodity data.\n\n"
-                "API limit may be reached. Try again shortly.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
-        signals = await scan_pairs(data_map, balance)
-        signals = filter_by_confidence(signals)
-
-        if not signals:
-            await msg.edit_text(
-                "⏸ *No Commodity Signals Right Now*\n\n"
-                "No setups met the ≥70% confidence threshold.\n"
-                "_Market may be consolidating._\n\nTry again in 30 minutes.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
-        top = signals[:3]
-        await msg.delete()
-
-        await context.bot.send_message(
-            chat_id,
-            f"⚗️ *TrendGuard AI — Commodities Scan*\n"
-            f"Scanned *{len(data_map)}* instruments — *{len(signals)}* ≥{MIN_CONFIDENCE_TO_SHOW}% — top {len(top)} shown\n"
-            f"💰 Balance: `${balance:,.2f}` · Risk: `1%`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        for i, sig in enumerate(top, 1):
-            await context.bot.send_message(
-                chat_id, await format_signal(sig, i, len(top)),
-                parse_mode=ParseMode.MARKDOWN,
-            )
-
-    except Exception as e:
-        logger.error(f"commodities_command error: {e}", exc_info=True)
         await msg.edit_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
 
 
@@ -450,7 +312,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0].lower() == "list":
         pending  = list_pending()
         approved = list_approved_users()
-        p_text = "\n".join(
+        p_text   = "\n".join(
             f"• `{p['id']}` — {p['name']} (@{p['username']})"
             for p in pending
         ) if pending else "_none_"
@@ -469,6 +331,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Chat ID must be a number.")
             return
+
         await update.message.reply_text(
             f"✅ Approved `{target_id}` — they can now use the bot.",
             parse_mode=ParseMode.MARKDOWN,
@@ -491,7 +354,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending = next_pending()
     if not pending:
         approved = list_approved_users()
-        a_text = "\n".join(f"• `{c}`" for c in approved) if approved else "_none yet_"
+        a_text   = "\n".join(f"• `{c}`" for c in approved) if approved else "_none yet_"
         await update.message.reply_text(
             "✅ *No pending requests.*\n\n"
             f"*Approved users:*\n{a_text}\n\n"
@@ -511,12 +374,104 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner-only: diagnose why signals are not coming through."""
+    chat_id = update.effective_chat.id
+
+    if str(chat_id) != str(OWNER_CHAT_ID):
+        return
+
+    await update.message.reply_text("🔍 *Debug scan starting on BTC/USD...*", parse_mode=ParseMode.MARKDOWN)
+
+    try:
+        # Step 1 — Fetch data
+        data_map = await fetch_multiple_pairs(["BTC/USD"])
+
+        if not data_map:
+            await update.message.reply_text("❌ *No data returned* — TwelveData fetch completely failed.\nCheck your TWELVEDATA\\_API\\_KEY in Railway.", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        tfs = data_map.get("BTC/USD", {})
+        if not tfs:
+            await update.message.reply_text("❌ BTC/USD missing from data\\_map", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        # Step 2 — Show timeframes
+        tf_lines = []
+        for tf, df in tfs.items():
+            row = df.iloc[-1]
+            tf_lines.append(f"  *{tf}*: {len(df)} rows | close: `{row.get('close', 'MISSING')}`")
+
+        await update.message.reply_text(
+            "✅ *Data fetched:*\n" + "\n".join(tf_lines),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # Step 3 — Indicator values
+        df_1h = tfs.get("1h")
+        if df_1h is None:
+            await update.message.reply_text("❌ No 1h timeframe data found", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        df_ind = compute_indicators(df_1h.copy())
+        row    = df_ind.iloc[-1]
+
+        await update.message.reply_text(
+            f"🔬 *Indicators (1H):*\n\n"
+            f"RSI: `{float(row.get('rsi', 0)):.2f}`\n"
+            f"MACD: `{float(row.get('macd', 0)):.6f}`\n"
+            f"MACD Signal: `{float(row.get('macd_signal', 0)):.6f}`\n"
+            f"Stoch K: `{float(row.get('stoch_k', 0)):.2f}`\n"
+            f"Stoch D: `{float(row.get('stoch_d', 0)):.2f}`\n"
+            f"BB %B: `{float(row.get('bb_pct', 0)):.4f}`\n"
+            f"ADX: `{float(row.get('adx', 0)):.2f}`\n"
+            f"CCI: `{float(row.get('cci', 0)):.2f}`\n"
+            f"Williams R: `{float(row.get('williams_r', 0)):.2f}`\n",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # Step 4 — Votes
+        buy_v, sell_v, signals = score_indicators(row, "BUY")
+        sig_lines = "\n".join(f"  {k}: {v}" for k, v in signals.items())
+        await update.message.reply_text(
+            f"🗳 *Votes:* BUY={buy_v} SELL={sell_v}\n\n{sig_lines}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # Step 5 — Full analysis
+        balance = get_balance(chat_id) or 1000.0
+        sig     = await analyze_pair("BTC/USD", tfs, balance)
+
+        if sig is None:
+            await update.message.reply_text("❌ analyze\\_pair returned None", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        reasons = "\n".join(f"• {r}" for r in sig.no_trade_reasons) if sig.no_trade_reasons else "_none_"
+        warns   = "\n".join(f"• {w}" for w in sig.warnings) if sig.warnings else "_none_"
+
+        await update.message.reply_text(
+            f"📋 *Signal Result:*\n\n"
+            f"Direction: `{sig.direction}`\n"
+            f"Confidence: `{sig.confidence}%`\n"
+            f"Confluence: `{sig.confluence}/8`\n"
+            f"No Trade: `{sig.no_trade}`\n\n"
+            f"*Blocked by:*\n{reasons}\n\n"
+            f"*Warnings:*\n{warns}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Debug error: `{e}`", parse_mode=ParseMode.MARKDOWN)
+
+
 async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await require_authorized(update):
         return ConversationHandler.END
+
     chat_id = update.effective_chat.id
     current = get_balance(chat_id)
     cur_txt = f"\n_Current: ${current:,.2f}_" if current else ""
+
     await update.message.reply_text(
         f"💰 *Set Your Trading Balance (USD)*{cur_txt}\n\n"
         "Type your balance e.g. `500` or `1000`\n"
@@ -529,6 +484,7 @@ async def setbalance_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def setbalance_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     text    = update.message.text.strip().replace(",", "").replace("$", "")
+
     try:
         balance = float(text)
     except ValueError:
@@ -537,15 +493,18 @@ async def setbalance_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode=ParseMode.MARKDOWN,
         )
         return ASK_BAL
+
     if balance < 1:
         await update.message.reply_text("❌ Minimum $1.\n\nTry again:", parse_mode=ParseMode.MARKDOWN)
         return ASK_BAL
+
     set_balance(chat_id, balance)
     risk = balance * 0.01
+
     await update.message.reply_text(
         f"✅ *Balance saved: ${balance:,.2f}*\n\n"
         f"Risk per trade: `${risk:,.2f}` (1%)\n\n"
-        f"Use /signal, /crypto, /stocks, /oil or /commodities for live signals!",
+        f"Use /signal, /crypto or /stocks for live signals!",
         parse_mode=ParseMode.MARKDOWN,
     )
     return ConversationHandler.END
@@ -569,22 +528,49 @@ def build_setbalance_handler() -> ConversationHandler:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
         return
-    msg = "TrendGuard AI Help\n\nCommands:\n/signal forex and gold\n/crypto crypto 24h\n/stocks US stocks\n/oil crude oil and gas\n/commodities silver metals\n/setbalance set balance\n/status session info\n\nSignals include direction, confidence, SL, TP1 TP2 TP3, 7 AI agents, coordinator verdict FIRE or NO TRADE"
-    await update.message.reply_text(msg)
+
+    await update.message.reply_text(
+        "📖 *TrendGuard AI — Help*\n\n"
+        "*Commands:*\n"
+        "• /signal — scan all pairs (weekdays)\n"
+        "• /crypto — crypto only (24/7)\n"
+        "• /stocks — US stocks scan (weekdays)\n"
+        "• /setbalance — set your balance\n"
+        "• /status — current session + news\n\n"
+        "*Signal includes:*\n"
+        "✅ Direction + Confidence %\n"
+        "✅ Signal Health + Data Quality\n"
+        "✅ 8 indicators (RSI, MACD, Stoch, BB, ATR, ADX, CCI, Williams)\n"
+        "✅ TP1, TP2, TP3 + Partial TP + Invalidation\n"
+        "✅ 4 Agent Analysis\n"
+        "✅ Market Regime + Session quality\n"
+        "✅ News filter + Daily trend gate\n"
+        f"✅ Only shown if confidence ≥ {MIN_CONFIDENCE_TO_SHOW}%\n\n"
+        "*Forex/Gold pairs:*\n"
+        "EUR/USD · GBP/USD · USD/JPY · USD/CHF\n"
+        "AUD/USD · USD/CAD · XAU/USD (Gold)\n\n"
+        "*Crypto pairs:*\n"
+        "BTC · ETH · BNB · SOL\n\n"
+        "*US Stocks:*\n"
+        "AAPL · TSLA · NVDA · AMZN · MSFT\n"
+        "META · GOOGL · AMD · NFLX · JPM",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
         return
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
+
+    chat_id      = update.effective_chat.id
+    balance      = get_balance(chat_id)
     session_name, is_active = get_current_session()
-    bal_text = f"${balance:,.2f}" if balance else "Not set"
+    bal_text     = f"${balance:,.2f}" if balance else "Not set"
+
     try:
         upcoming = await get_upcoming_events(hours=24)
     except Exception:
         upcoming = []
+
     await update.message.reply_text(
-        format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+        format_status(session_name, is_active, minutes_to_next_scan(), ba
