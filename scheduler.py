@@ -15,10 +15,10 @@ logger    = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 # Confidence floor for private users (same as handlers.py)
-MIN_CONFIDENCE_TO_SHOW = 70
+MIN_CONFIDENCE_TO_SHOW = 60
 
 # Only signals AT OR ABOVE this threshold get posted to the group
-GROUP_MIN_CONFIDENCE = 80
+GROUP_MIN_CONFIDENCE = 75
 
 # Your Telegram group chat ID
 GROUP_CHAT_ID = "-3884983020"
