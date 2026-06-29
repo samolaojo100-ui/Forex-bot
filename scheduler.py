@@ -10,7 +10,7 @@ from signal_engine import scan_pairs
 from formatter import format_signal
 from session_manager import is_weekend
 from user_settings import get_balance
-from config import CHAT_IDS
+from config import CHAT_IDS, ALL_PAIRS, CRYPTO_PAIRS
 
 logger    = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
@@ -22,68 +22,51 @@ GROUP_MIN_CONFIDENCE   = 75   # Telegram group
 # ── Group chat ID ─────────────────────────────────────────────────────
 GROUP_CHAT_ID = "-3884983020"
 
+# ── Always-on pairs (24/7) ────────────────────────────────────────────
+ALWAYS_ON = ["XAU/USD", "BTC/USD", "ETH/USD", "SOL/USD"]
+
 # ── Session pair map ──────────────────────────────────────────────────
-# Each session defines which pairs are most powerful during that window.
-# XAU/USD and crypto run 24/7 and are always included.
-
-ALWAYS_ON = [
-    "XAU/USD",
-    "BTC/USD", "ETH/USD", "SOL/USD", "BNB/USD", "XRP/USD",
-]
-
 SESSION_PAIRS = {
     "tokyo": {
         "utc_start": 0,
-        "utc_end":   9,
-        "pairs": ["USD/JPY", "AUD/USD", "NZD/USD", "EUR/GBP"] + ALWAYS_ON,
-        "label": "🗼 Tokyo Session",
+        "utc_end":   7,
+        "pairs":     ["USD/JPY"] + ALWAYS_ON,
+        "label":     "🗼 Tokyo Session",
     },
     "london": {
         "utc_start": 7,
-        "utc_end":   12,   # 7-12 pure London (before NY opens)
-        "pairs": ["EUR/USD", "GBP/USD", "USD/CHF", "EUR/GBP", "GBP/JPY"] + ALWAYS_ON,
-        "label": "🇬🇧 London Session",
+        "utc_end":   12,
+        "pairs":     ["EUR/USD", "GBP/USD"] + ALWAYS_ON,
+        "label":     "🇬🇧 London Session",
     },
     "overlap": {
         "utc_start": 12,
-        "utc_end":   16,   # London/NY overlap — strongest window
-        "pairs": [
-            "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-            "GBP/JPY", "AUD/USD", "USD/CAD", "NZD/USD",
-            "EUR/GBP",
-        ] + ALWAYS_ON,
-        "label": "⚡ London/NY Overlap",
+        "utc_end":   16,
+        "pairs":     ALL_PAIRS,   # All 7 — strongest window
+        "label":     "⚡ London/NY Overlap",
     },
     "newyork": {
         "utc_start": 16,
-        "utc_end":   21,   # NY afternoon (after overlap)
-        "pairs": ["USD/CAD", "USD/CHF", "EUR/USD", "GBP/USD"] + ALWAYS_ON,
-        "label": "🗽 New York Session",
+        "utc_end":   21,
+        "pairs":     ["EUR/USD", "GBP/USD", "USD/JPY"] + ALWAYS_ON,
+        "label":     "🗽 New York Session",
     },
     "dead": {
         "utc_start": 21,
-        "utc_end":   24,   # Dead hours — forex sleeps
-        "pairs": ALWAYS_ON,  # Only gold + crypto
-        "label": "🌙 After Hours",
+        "utc_end":   24,
+        "pairs":     ALWAYS_ON,   # Gold + Crypto only
+        "label":     "🌙 After Hours",
     },
 }
 
 
 def get_active_session() -> dict:
-    """Return the active session config based on current UTC hour."""
     hour = datetime.now(timezone.utc).hour
-
-    # Check overlap first (most specific)
-    if 12 <= hour < 16:
-        return SESSION_PAIRS["overlap"]
-    elif 0 <= hour < 7:
-        return SESSION_PAIRS["tokyo"]
-    elif 7 <= hour < 12:
-        return SESSION_PAIRS["london"]
-    elif 16 <= hour < 21:
-        return SESSION_PAIRS["newyork"]
-    else:
-        return SESSION_PAIRS["dead"]
+    if 12 <= hour < 16:  return SESSION_PAIRS["overlap"]
+    elif 0  <= hour < 7: return SESSION_PAIRS["tokyo"]
+    elif 7  <= hour < 12:return SESSION_PAIRS["london"]
+    elif 16 <= hour < 21:return SESSION_PAIRS["newyork"]
+    else:                return SESSION_PAIRS["dead"]
 
 
 def filter_by_confidence(signals: list, min_conf: int) -> list:
@@ -91,17 +74,8 @@ def filter_by_confidence(signals: list, min_conf: int) -> list:
 
 
 async def auto_scan(app: Application):
-    """
-    Session-aware auto scan.
-    Scans only the pairs that are powerful in the current session.
-    XAU/USD and crypto always included.
-    """
-    # Weekend — crypto + gold only
     if is_weekend():
-        session = {
-            "pairs": ALWAYS_ON,
-            "label": "🌐 Weekend — Crypto & Gold",
-        }
+        session = {"pairs": ALWAYS_ON, "label": "🌐 Weekend — Gold & Crypto"}
     else:
         session = get_active_session()
 
@@ -120,7 +94,7 @@ async def auto_scan(app: Application):
         logger.info("Auto-scan — no data returned")
         return
 
-    # ── Send to private users (70%+) ─────────────────────────────────
+    # ── Private users (70%+) ─────────────────────────────────────────
     for chat_id_raw in CHAT_IDS:
         chat_id = str(chat_id_raw).strip()
         if not chat_id:
@@ -161,7 +135,7 @@ async def auto_scan(app: Application):
         except Exception as e:
             logger.error(f"Send error to {chat_id}: {e}")
 
-    # ── Send to group (75%+) ──────────────────────────────────────────
+    # ── Group (75%+) ──────────────────────────────────────────────────
     try:
         group_balance = 1000.0
         all_signals   = await scan_pairs(data_map, group_balance)
