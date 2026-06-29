@@ -26,7 +26,7 @@ from stocks_engine import fetch_stock_pairs, STOCK_PAIRS
 logger  = logging.getLogger(__name__)
 ASK_BAL = 1
 
-MIN_CONFIDENCE_TO_SHOW = 70
+MIN_CONFIDENCE_TO_SHOW = 60
 
 
 def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_SHOW) -> list:
