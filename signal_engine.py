@@ -79,8 +79,7 @@ def calc_lot(pair: str, sl_pips: float, balance: float, price: float) -> float:
     if is_crypto(pair):
         return round(risk_usd / max(sl_pips, 0.01), 4)
     if is_gold(pair):
-        pip_usd = 1.0
-        return max(0.01, round(risk_usd / (sl_pips * pip_usd), 2))
+        return max(0.01, round(risk_usd / (sl_pips * 1.0), 2))
     pip_usd = 10 if "JPY" not in pair else 9.09
     return max(0.01, round(risk_usd / (sl_pips * pip_usd), 2))
 
@@ -93,12 +92,20 @@ def decimal_places(pair: str, price: float) -> int:
 
 # ── Indicator scoring ─────────────────────────────────────────────────────────
 
-def score_indicators(row: pd.Series, direction: str) -> tuple:
+def score_indicators(row, direction: str) -> tuple:
+    """Score all 8 indicators. row can be pd.Series or dict."""
+    # ── FIX: safely extract scalar values to avoid DataFrame ambiguity ──
+    def get(key):
+        val = row[key] if hasattr(row, '__getitem__') else getattr(row, key)
+        if isinstance(val, pd.Series):
+            val = val.iloc[0]
+        return float(val)
+
     buy_votes  = 0
     sell_votes = 0
     signals    = {}
 
-    rsi = row["rsi"]
+    rsi = get("rsi")
     if rsi < 30:              buy_votes  += 1; signals["rsi"] = "BUY"
     elif 30 <= rsi < 45:      buy_votes  += 1; signals["rsi"] = "BUY"
     elif 45 <= rsi <= 55:     signals["rsi"] = "NEUTRAL"
@@ -106,39 +113,45 @@ def score_indicators(row: pd.Series, direction: str) -> tuple:
     elif rsi > 70:            sell_votes += 1; signals["rsi"] = "SELL"
     else:                     signals["rsi"] = "NEUTRAL"
 
-    if row["macd"] > row["macd_signal"] and row["macd_hist"] > 0:
+    macd      = get("macd")
+    macd_sig  = get("macd_signal")
+    macd_hist = get("macd_hist")
+    if macd > macd_sig and macd_hist > 0:
         buy_votes  += 1; signals["macd"] = "BUY"
-    elif row["macd"] < row["macd_signal"] and row["macd_hist"] < 0:
+    elif macd < macd_sig and macd_hist < 0:
         sell_votes += 1; signals["macd"] = "SELL"
     else:
         signals["macd"] = "NEUTRAL"
 
-    k, d = row["stoch_k"], row["stoch_d"]
+    k = get("stoch_k")
+    d = get("stoch_d")
     if k > d and k < 80:     buy_votes  += 1; signals["stoch"] = "BUY"
     elif k < d and k > 20:   sell_votes += 1; signals["stoch"] = "SELL"
     else:                    signals["stoch"] = "NEUTRAL"
 
-    bb = row["bb_pct"]
+    bb = get("bb_pct")
     if bb < 0.2:              buy_votes  += 1; signals["bb"] = "BUY"
     elif bb > 0.8:            sell_votes += 1; signals["bb"] = "SELL"
     else:                     signals["bb"] = "NEUTRAL"
 
     signals["atr"] = "NEUTRAL"
 
-    adx = row["adx"]
-    if adx > 25 and row["plus_di"] > row["minus_di"]:
+    adx      = get("adx")
+    plus_di  = get("plus_di")
+    minus_di = get("minus_di")
+    if adx > 25 and plus_di > minus_di:
         buy_votes  += 1; signals["adx"] = "BUY"
-    elif adx > 25 and row["minus_di"] > row["plus_di"]:
+    elif adx > 25 and minus_di > plus_di:
         sell_votes += 1; signals["adx"] = "SELL"
     else:
         signals["adx"] = "NEUTRAL"
 
-    cci = row["cci"]
+    cci = get("cci")
     if cci < -100:            buy_votes  += 1; signals["cci"] = "BUY"
     elif cci > 100:           sell_votes += 1; signals["cci"] = "SELL"
     else:                     signals["cci"] = "NEUTRAL"
 
-    wr = row["williams_r"]
+    wr = get("williams_r")
     if wr < -80:              buy_votes  += 1; signals["williams"] = "BUY"
     elif wr > -20:            sell_votes += 1; signals["williams"] = "SELL"
     else:                     signals["williams"] = "NEUTRAL"
@@ -148,13 +161,13 @@ def score_indicators(row: pd.Series, direction: str) -> tuple:
 
 def market_regime(df: pd.DataFrame) -> tuple:
     row   = df.iloc[-1]
-    e9    = row["ema9"]
-    e21   = row["ema21"]
-    e50   = row["ema50"]
-    e200  = row["ema200"]
-    adx   = row["adx"]
-    atr   = row["atr"]
-    close = row["close"]
+    e9    = float(row["ema9"])
+    e21   = float(row["ema21"])
+    e50   = float(row["ema50"])
+    e200  = float(row["ema200"])
+    adx   = float(row["adx"])
+    atr   = float(row["atr"])
+    close = float(row["close"])
 
     if e9 > e21 > e50 and close > e200:
         trend = "Trending Up 📈"
@@ -177,51 +190,30 @@ async def _score_news_sentiment(pair: str) -> tuple:
     try:
         from news_filter import get_upcoming_events
         events = await get_upcoming_events(hours=12)
-
-        bullish_keywords = ["beat", "better", "growth", "strong", "rise",
-                            "gain", "surplus", "positive", "above forecast"]
-        bearish_keywords = ["miss", "weak", "fall", "drop", "below",
-                            "cut", "deficit", "negative", "rate hike", "hike"]
-
-        bullish  = 0
-        bearish  = 0
-        currencies = pair.replace("/", "").upper()
-
+        bullish_kw = ["beat","better","growth","strong","rise","gain","surplus","positive","above forecast"]
+        bearish_kw = ["miss","weak","fall","drop","below","cut","deficit","negative","rate hike","hike"]
+        bullish    = 0
+        bearish    = 0
+        currencies = pair.replace("/","").upper()
         for event in events:
-            name     = event.get("event", "").lower()
-            currency = event.get("currency", "").upper()
+            name     = event.get("event","").lower()
+            currency = event.get("currency","").upper()
             if currency and currency not in currencies:
                 continue
-            for kw in bullish_keywords:
-                if kw in name:
-                    bullish += 1
-                    break
-            for kw in bearish_keywords:
-                if kw in name:
-                    bearish += 1
-                    break
-
+            for kw in bullish_kw:
+                if kw in name: bullish += 1; break
+            for kw in bearish_kw:
+                if kw in name: bearish += 1; break
         if bullish == 0 and bearish == 0:   label = "NEUTRAL"
         elif bullish > bearish * 1.5:       label = "BULLISH"
         elif bearish > bullish * 1.5:       label = "BEARISH"
         else:                               label = "MIXED"
-
         return bullish, bearish, label
-
     except Exception:
         return 0, 0, "NEUTRAL"
 
 
-def _check_tp_reachable(
-    direction: str, entry: float, tp1: float,
-    support: float, resistance: float,
-    atr: float, pair: str,
-) -> tuple:
-    """
-    Soft check only — returns warning string instead of hard blocking.
-    Only blocks if resistance/support sits exactly between entry and TP1
-    with less than 40% gap remaining.
-    """
+def _check_tp_reachable(direction, entry, tp1, support, resistance, atr, pair):
     if direction == "BUY":
         tp_distance = tp1 - entry
         if resistance > entry and resistance < tp1:
@@ -234,7 +226,6 @@ def _check_tp_reachable(
             gap = entry - support
             if gap < tp_distance * 0.4:
                 return False, f"Support at {support:.{decimal_places(pair, entry)}f} blocks TP1"
-
     return True, ""
 
 
@@ -248,32 +239,30 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     confidence_penalty = 0
     crypto             = is_crypto(pair)
 
-    # ── Compute indicators ───────────────────────────────────────────
     try:
         processed = {tf: compute_indicators(df.copy()) for tf, df in tf_data.items()}
     except Exception as e:
         logger.warning(f"{pair} indicators error: {e}")
         return None
 
-    # ── News gate (hard — forex/gold only) ───────────────────────────
+    # ── News gate ────────────────────────────────────────────────────
     news_blocked, news_reason = await check_news_block(pair)
     if news_blocked and not crypto:
         no_trade_reasons.append(news_reason)
     elif news_blocked and crypto:
-        # For crypto, news block is just a warning
         warnings.append(f"📰 News caution: {news_reason}")
         confidence_penalty += 5
 
     # ── News sentiment ───────────────────────────────────────────────
     news_bullish, news_bearish, news_sentiment = await _score_news_sentiment(pair)
 
-    # ── 1H primary analysis ──────────────────────────────────────────
+    # ── 1H primary ───────────────────────────────────────────────────
     df_1h = processed.get("1h") or processed.get("4h") or list(processed.values())[-1]
     row   = df_1h.iloc[-1]
     close = float(row["close"])
     dec   = decimal_places(pair, close)
 
-    # ── MTF direction vote ───────────────────────────────────────────
+    # ── MTF vote ─────────────────────────────────────────────────────
     tf_buy_votes  = 0
     tf_sell_votes = 0
     for tf, df in processed.items():
@@ -286,79 +275,73 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     direction   = "BUY" if tf_buy_votes >= tf_sell_votes else "SELL"
     mtf_aligned = abs(tf_buy_votes - tf_sell_votes) >= 2
 
-    # ── News sentiment conflict ──────────────────────────────────────
+    # ── News conflict ────────────────────────────────────────────────
     if news_sentiment == "BEARISH" and direction == "BUY":
-        warnings.append(f"⚠️ News sentiment bearish — conflicts with BUY")
+        warnings.append("⚠️ News sentiment bearish — conflicts with BUY")
         confidence_penalty += 8
     elif news_sentiment == "BULLISH" and direction == "SELL":
-        warnings.append(f"⚠️ News sentiment bullish — conflicts with SELL")
+        warnings.append("⚠️ News sentiment bullish — conflicts with SELL")
         confidence_penalty += 8
     elif news_sentiment == "MIXED":
-        warnings.append("⚠️ Mixed news sentiment — caution advised")
+        warnings.append("⚠️ Mixed news sentiment — caution")
         confidence_penalty += 4
 
-    # ── Daily trend check ────────────────────────────────────────────
+    # ── Daily trend ──────────────────────────────────────────────────
     df_daily = processed.get("1day")
     if df_daily is not None:
-        r_daily        = df_daily.iloc[-1]
-        bv_d, sv_d, _  = score_indicators(r_daily, direction)
-        daily_adx      = float(r_daily.get("adx", 0))
-        counter_trend  = (direction == "BUY"  and sv_d > bv_d) or \
-                         (direction == "SELL" and bv_d > sv_d)
-
+        r_daily       = df_daily.iloc[-1]
+        bv_d, sv_d, _ = score_indicators(r_daily, direction)
+        daily_adx     = float(r_daily["adx"])
+        counter_trend = (direction == "BUY"  and sv_d > bv_d) or \
+                        (direction == "SELL" and bv_d > sv_d)
         if counter_trend:
             if daily_adx > 25 and not crypto:
-                # Hard block only for forex/gold with strong daily trend
                 no_trade_reasons.append(
                     f"📉 Strong daily trend opposes {direction} (ADX {daily_adx:.0f})"
                 )
             else:
-                # Crypto or weak daily trend → warning + penalty only
-                warnings.append(
-                    f"⚠️ Daily trend leans against {direction} (ADX {daily_adx:.0f})"
-                )
+                warnings.append(f"⚠️ Daily trend leans against {direction} (ADX {daily_adx:.0f})")
                 confidence_penalty += 10
 
     # ── Score on 1H ──────────────────────────────────────────────────
     buy_votes, sell_votes, ind_signals = score_indicators(row, direction)
     confluence = buy_votes if direction == "BUY" else sell_votes
 
-    # ── Confidence % ─────────────────────────────────────────────────
+    # ── Confidence ───────────────────────────────────────────────────
     tf_agree   = tf_buy_votes if direction == "BUY" else tf_sell_votes
     confidence = int(((confluence / 8) * 0.5 + (tf_agree / total_tfs) * 0.5) * 100)
     confidence = max(0, confidence - confidence_penalty)
     confidence = min(confidence, 99)
 
-    # ── Minimum confluence gate ──────────────────────────────────────
+    # ── Confluence gate ──────────────────────────────────────────────
     if confluence < 3:
         no_trade_reasons.append(f"📊 Only {confluence}/8 indicators confirm — need ≥3")
 
     # ── S/R check ────────────────────────────────────────────────────
     support, resistance = support_resistance(df_1h)
-    warn_threshold = 0.003
-    hard_threshold = 0.001
+    support    = float(support)
+    resistance = float(resistance)
 
     if direction == "BUY":
         dist_pct = (resistance - close) / close if close > 0 else 1
-        if dist_pct < hard_threshold:
-            no_trade_reasons.append(f"⚠️ Entry sitting on resistance ({resistance:.{dec}f})")
-        elif dist_pct < warn_threshold:
+        if dist_pct < 0.001:
+            no_trade_reasons.append(f"⚠️ Entry on resistance ({resistance:.{dec}f})")
+        elif dist_pct < 0.003:
             warnings.append(f"⚠️ Entry near resistance ({resistance:.{dec}f})")
             confidence = max(0, confidence - 5)
     else:
         dist_pct = (close - support) / close if close > 0 else 1
-        if dist_pct < hard_threshold:
-            no_trade_reasons.append(f"⚠️ Entry sitting on support ({support:.{dec}f})")
-        elif dist_pct < warn_threshold:
+        if dist_pct < 0.001:
+            no_trade_reasons.append(f"⚠️ Entry on support ({support:.{dec}f})")
+        elif dist_pct < 0.003:
             warnings.append(f"⚠️ Entry near support ({support:.{dec}f})")
             confidence = max(0, confidence - 5)
 
     # ── Confidence floor ─────────────────────────────────────────────
-    # Lowered from 40% to 30% so penalties don't kill valid signals
     if confidence < 30:
-        no_trade_reasons.append(f"📊 Combined confidence too low ({confidence}%) — need ≥30%")
+        no_trade_reasons.append(f"📊 Confidence too low ({confidence}%) — need ≥30%")
 
-    # ── ATR-based SL/TP ──────────────────────────────────────────────
+    # ── SL/TP ────────────────────────────────────────────────────────
     atr     = max(float(row["atr"]), close * 0.001)
     sl_dist = atr * 1.5
 
@@ -385,14 +368,14 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     lot      = calc_lot(pair, sl_pips, balance, close)
     risk_usd = round(balance * RISK_PERCENT / 100, 2)
 
-    # ── TP Reachability (warning only — never hard blocks) ───────────
+    # ── TP Reachability (warning only) ───────────────────────────────
     tp_reachable, tp_reach_reason = _check_tp_reachable(
         direction, close, tp1, support, resistance, atr, pair
     )
     if not tp_reachable:
         warnings.append(f"🎯 {tp_reach_reason}")
-        confidence = max(0, confidence - 8)
-        tp_reachable = True  # downgrade to warning, never block
+        confidence  = max(0, confidence - 8)
+        tp_reachable = True
 
     # ── Market regime ─────────────────────────────────────────────────
     trend, volatility = market_regime(df_1h)
@@ -412,29 +395,21 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     else:                 asset_type = "FOREX 💱"
 
     return Signal(
-        pair=pair,
-        symbol=pair,
+        pair=pair, symbol=pair,
         direction=direction,
         confidence=confidence,
         confluence=confluence,
         mtf_aligned=mtf_aligned,
         entry=round(close, dec),
-        sl=sl,
-        tp1=tp1, tp2=tp2, tp3=tp3,
+        sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
         partial_tp=partial_tp,
         invalidation=invalidation,
-        sl_pips=sl_pips,
-        tp1_pips=tp1_pips,
-        tp2_pips=tp2_pips,
-        tp3_pips=tp3_pips,
-        rr_ratio=rr,
-        lot_size=lot,
-        risk_usd=risk_usd,
+        sl_pips=sl_pips, tp1_pips=tp1_pips,
+        tp2_pips=tp2_pips, tp3_pips=tp3_pips,
+        rr_ratio=rr, lot_size=lot, risk_usd=risk_usd,
         asset_type=asset_type,
-        trend=trend,
-        volatility=volatility,
-        session=session_name,
-        session_quality=session_quality,
+        trend=trend, volatility=volatility,
+        session=session_name, session_quality=session_quality,
         adx=round(float(row["adx"]), 1),
         rsi=round(float(row["rsi"]), 2),
         macd_signal=ind_signals.get("macd", "NEUTRAL"),
@@ -443,13 +418,10 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
         williams_signal=ind_signals.get("williams", "NEUTRAL"),
         bb_signal=ind_signals.get("bb", "NEUTRAL"),
         candle_pattern=candle,
-        news_blocked=news_blocked,
-        news_reason=news_reason,
-        news_bullish=news_bullish,
-        news_bearish=news_bearish,
+        news_blocked=news_blocked, news_reason=news_reason,
+        news_bullish=news_bullish, news_bearish=news_bearish,
         news_sentiment=news_sentiment,
-        tp_reachable=tp_reachable,
-        tp_reach_reason=tp_reach_reason,
+        tp_reachable=tp_reachable, tp_reach_reason=tp_reach_reason,
         no_trade=len(no_trade_reasons) > 0,
         no_trade_reasons=no_trade_reasons,
         warnings=warnings,
@@ -470,7 +442,6 @@ async def scan_pairs(data_map: dict, balance: float) -> list:
 
 
 async def force_scan_pairs(data_map: dict, balance: float) -> list:
-    """Force signals for crypto — ignores NO TRADE gates."""
     signals = []
     for pair, tfs in data_map.items():
         try:
