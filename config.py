@@ -8,8 +8,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_IDS  = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 
 # ── Access control ───────────────────────────────────────────────────
-OWNER_CHAT_ID    = os.getenv("OWNER_CHAT_ID", "").strip()
-OWNER_USERNAME   = "SamOlaojo"
+OWNER_CHAT_ID     = os.getenv("OWNER_CHAT_ID", "").strip()
+OWNER_USERNAME    = "SamOlaojo"
 _extra_authorized = [c.strip() for c in os.getenv("AUTHORIZED_USERS", "").split(",") if c.strip()]
 AUTHORIZED_USERS  = list({OWNER_CHAT_ID, *_extra_authorized}) if OWNER_CHAT_ID else _extra_authorized
 
@@ -28,31 +28,21 @@ SESSION_OVERLAPS = [
     {"name": "London/New York Overlap", "start": 12, "end": 16},
 ]
 
-# ── Pairs — 20 majors total ───────────────────────────────────────────
-# Forex + Gold (10) — highest volume and liquidity
+# ── 7 Core Pairs ─────────────────────────────────────────────────────
 FOREX_PAIRS = [
-    "EUR/USD",   # Most traded pair
-    "GBP/USD",   # High volatility
-    "USD/JPY",   # Safe haven
-    "XAU/USD",   # Gold — always active
-    "GBP/JPY",   # High pip mover
-    "AUD/USD",   # Commodity currency
-    "USD/CAD",   # Oil-correlated
-    "USD/CHF",   # Safe haven
-    "EUR/GBP",   # Strong European pair
-    "NZD/USD",   # Liquid minor
+    "EUR/USD",   # Most liquid forex pair
+    "GBP/USD",   # High volatility forex
+    "USD/JPY",   # Safe haven forex
+    "XAU/USD",   # Gold — 24/7
 ]
 
-# Crypto (5) — top by volume
 CRYPTO_PAIRS = [
-    "BTC/USD",
-    "ETH/USD",
-    "SOL/USD",
-    "BNB/USD",
-    "XRP/USD",
+    "BTC/USD",   # Bitcoin
+    "ETH/USD",   # Ethereum
+    "SOL/USD",   # Solana
 ]
 
-ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS  # 15 pairs (stocks handled separately)
+ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS  # 7 total
 
 # ── Timeframes ────────────────────────────────────────────────────────
 TIMEFRAMES = ["15min", "1h", "4h", "1day"]
