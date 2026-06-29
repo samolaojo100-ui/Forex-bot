@@ -9,10 +9,11 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.twelvedata.com"
 
-# Basic 8 plan = 8 requests/minute max
-MAX_REQUESTS_PER_MINUTE = 8
+# Basic 8 plan = 8 requests/minute
+# We fetch in controlled batches to respect this limit
+MAX_PER_MINUTE = 8
 _request_times = []
-_rate_lock = asyncio.Lock()
+_rate_lock     = asyncio.Lock()
 
 
 async def _throttle():
@@ -20,32 +21,38 @@ async def _throttle():
         now = time.monotonic()
         while _request_times and now - _request_times[0] > 60:
             _request_times.pop(0)
-        if len(_request_times) >= MAX_REQUESTS_PER_MINUTE:
-            wait_time = 60 - (now - _request_times[0]) + 0.5
-            logger.info(f"Rate limit: waiting {wait_time:.1f}s")
-            await asyncio.sleep(max(wait_time, 0))
+        if len(_request_times) >= MAX_PER_MINUTE:
+            wait = 60 - (now - _request_times[0]) + 0.3
+            logger.info(f"Rate limit: waiting {wait:.1f}s")
+            await asyncio.sleep(max(wait, 0))
             now = time.monotonic()
             while _request_times and now - _request_times[0] > 60:
                 _request_times.pop(0)
         _request_times.append(time.monotonic())
 
 
-async def fetch_ohlcv(session, symbol, interval, outputsize=100):
+async def _fetch_one(session: aiohttp.ClientSession, symbol: str, interval: str) -> tuple:
+    """Fetch one symbol/interval combo. Returns (symbol, interval, df or None)."""
     params = {
         "symbol":     symbol,
         "interval":   interval,
-        "outputsize": outputsize,
+        "outputsize": 100,
         "apikey":     TWELVEDATA_API_KEY,
         "format":     "JSON",
     }
-    url = f"{BASE_URL}/time_series"
     try:
         await _throttle()
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.get(
+            f"{BASE_URL}/time_series",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
             data = await resp.json()
+
             if data.get("status") == "error" or "values" not in data:
-                logger.warning(f"{symbol} {interval}: {data.get('message', data)}")
-                return None
+                logger.warning(f"{symbol} {interval}: {data.get('message', 'no values')}")
+                return symbol, interval, None
+
             df = pd.DataFrame(data["values"])
             for col in ["open", "high", "low", "close"]:
                 df[col] = pd.to_numeric(df[col])
@@ -54,31 +61,49 @@ async def fetch_ohlcv(session, symbol, interval, outputsize=100):
             else:
                 df["volume"] = 0
             df = df.sort_values("datetime").reset_index(drop=True)
-            return df
+            return symbol, interval, df
+
     except Exception as e:
         logger.warning(f"Fetch error {symbol} {interval}: {e}")
-        return None
+        return symbol, interval, None
 
 
-async def fetch_all_timeframes(symbol):
+async def fetch_multiple_pairs(pairs: list) -> dict:
+    """
+    Fetch all pairs and timeframes in parallel batches.
+    Returns {pair: {tf: df}} — only pairs with complete data included.
+    Much faster than sequential fetching.
+    """
+    # Build all tasks
+    tasks = [
+        (pair, tf)
+        for pair in pairs
+        for tf in TIMEFRAMES
+    ]
+
+    results = {pair: {} for pair in pairs}
+
+    # Process in batches of MAX_PER_MINUTE to respect rate limit
     async with aiohttp.ClientSession() as session:
-        results = {}
-        for tf in TIMEFRAMES:
-            df = await fetch_ohlcv(session, symbol, tf)
-            if df is None or len(df) < 50:
-                logger.warning(f"{symbol} {tf}: insufficient data")
-                return None
-            results[tf] = df
-        return results
+        for i in range(0, len(tasks), MAX_PER_MINUTE):
+            batch = tasks[i:i + MAX_PER_MINUTE]
+            coros = [_fetch_one(session, pair, tf) for pair, tf in batch]
+            responses = await asyncio.gather(*coros)
 
+            for symbol, interval, df in responses:
+                if df is not None and len(df) >= 50:
+                    results[symbol][interval] = df
 
-async def fetch_multiple_pairs(pairs):
-    data_map = {}
-    for pair in pairs:
-        logger.info(f"Fetching {pair}...")
-        tfs = await fetch_all_timeframes(pair)
-        if tfs:
-            data_map[pair] = tfs
-        else:
-            logger.warning(f"{pair}: skipped")
-    return data_map
+            # Small pause between batches to stay within rate limit
+            if i + MAX_PER_MINUTE < len(tasks):
+                await asyncio.sleep(61)
+
+    # Only return pairs that have ALL timeframes
+    final = {
+        pair: tfs
+        for pair, tfs in results.items()
+        if all(tf in tfs for tf in TIMEFRAMES)
+    }
+
+    logger.info(f"✅ Fetched {len(final)}/{len(pairs)} pairs successfully")
+    return final
