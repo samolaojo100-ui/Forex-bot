@@ -257,7 +257,12 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     news_bullish, news_bearish, news_sentiment = await _score_news_sentiment(pair)
 
     # ── 1H primary ───────────────────────────────────────────────────
-    df_1h = processed.get("1h") or processed.get("4h") or list(processed.values())[-1]
+    if "1h" in processed:
+        df_1h = processed["1h"]
+    elif "4h" in processed:
+        df_1h = processed["4h"]
+    else:
+        df_1h = list(processed.values())[-1]
     row   = df_1h.iloc[-1]
     close = float(row["close"])
     dec   = decimal_places(pair, close)
