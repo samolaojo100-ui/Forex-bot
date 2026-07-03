@@ -543,4 +543,44 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
         rsi=round(float(row["rsi"]), 2),
         macd_signal=ind_signals.get("macd", "NEUTRAL"),
         stoch_signal=ind_signals.get("stoch", "NEUTRAL"),
-        cci_si
+        cci_signal=ind_signals.get("cci", "NEUTRAL"),
+        williams_signal=ind_signals.get("williams", "NEUTRAL"),
+        bb_signal=ind_signals.get("bb", "NEUTRAL"),
+        candle_pattern=candle,
+        tf_breakdown=tf_breakdown,
+        news_blocked=news_blocked, news_reason=news_reason,
+        news_bullish=news_bullish, news_bearish=news_bearish,
+        news_sentiment=news_sentiment,
+        tp_reachable=tp_reachable, tp_reach_reason=tp_reach_reason,
+        no_trade=len(no_trade_reasons) > 0,
+        no_trade_reasons=no_trade_reasons,
+        warnings=warnings,
+    )
+
+
+async def scan_pairs(data_map: dict, balance: float) -> list:
+    signals = []
+    for pair, tfs in data_map.items():
+        try:
+            sig = await analyze_pair(pair, tfs, balance)
+            if sig and not sig.no_trade:
+                signals.append(sig)
+        except Exception as e:
+            logger.warning(f"{pair} error: {e}")
+    signals.sort(key=lambda s: s.confidence, reverse=True)
+    return signals
+
+
+async def force_scan_pairs(data_map: dict, balance: float) -> list:
+    signals = []
+    for pair, tfs in data_map.items():
+        try:
+            sig = await analyze_pair(pair, tfs, balance)
+            if sig:
+                sig.no_trade         = False
+                sig.no_trade_reasons = []
+                signals.append(sig)
+        except Exception as e:
+            logger.warning(f"{pair} error: {e}")
+    signals.sort(key=lambda s: s.confidence, reverse=True)
+    return signals
