@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from dataclasses import asdict
 
 from data_fetcher import fetch_multiple_pairs
@@ -7,6 +8,17 @@ from config import ALL_PAIRS, ACCOUNT_BALANCE
 from db import init_db, get_stats, get_history
 
 app = FastAPI()
+
+# Allows the React Native app (via Expo Snack/Go, and later the built app)
+# to call this API from a different origin. Wide open for now since this
+# is a personal-use app with no public signup — tighten later if this
+# ever gets exposed more broadly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Kept in sync with handlers.py — signals below this confidence aren't
 # considered "shown" quality. Update both places if you change this.
