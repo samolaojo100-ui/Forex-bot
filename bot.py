@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(app: Application):
+    await init_db()
     await start_scheduler(app)
     logger.info("✅ TrendGuard AI bot started")
 
