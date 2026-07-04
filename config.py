@@ -1,3 +1,4 @@
+
 import os
 from dotenv import load_dotenv
 
@@ -28,21 +29,18 @@ SESSION_OVERLAPS = [
     {"name": "London/New York Overlap", "start": 12, "end": 16},
 ]
 
-# ── 7 Core Pairs ─────────────────────────────────────────────────────
+# ── 4 Core Pairs (Gold, Silver, EUR/USD, BTC) ─────────────────────────
 FOREX_PAIRS = [
     "EUR/USD",   # Most liquid forex pair
-    "GBP/USD",   # High volatility forex
-    "USD/JPY",   # Safe haven forex
     "XAU/USD",   # Gold — 24/7
+    "XAG/USD",   # Silver — 24/7
 ]
 
 CRYPTO_PAIRS = [
     "BTC/USD",   # Bitcoin
-    "ETH/USD",   # Ethereum
-    "SOL/USD",   # Solana
 ]
 
-ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS  # 7 total
+ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS  # 4 total
 
 # ── Timeframes ────────────────────────────────────────────────────────
 TIMEFRAMES = ["15min", "1h", "4h", "1day"]
@@ -51,6 +49,12 @@ TIMEFRAMES = ["15min", "1h", "4h", "1day"]
 ACCOUNT_BALANCE  = float(os.getenv("ACCOUNT_BALANCE", "1000"))
 RISK_PERCENT     = 1.0
 DEFAULT_RR_RATIO = 2.0
+
+# ── Signal Quality ────────────────────────────────────────────────────
+# Raised these since we're only watching 4 pairs now — fewer, higher-quality signals
+CONFIDENCE_THRESHOLD = 78      # was 70 — check bot.py wherever this is used/compared
+MIN_CONFLUENCE       = 5       # was hardcoded to 3 in signal_engine.py — see notes below
+REQUIRE_MTF_ALIGNED  = True    # new flag — see notes below for wiring it in
 
 # ── Scheduler ────────────────────────────────────────────────────────
 AUTO_SIGNAL_INTERVAL = 30  # minutes
