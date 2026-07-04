@@ -10,6 +10,7 @@ from handlers import (
     debug_command,
 )
 from scheduler import start_scheduler
+from db import init_db
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
