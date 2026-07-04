@@ -1,21 +1,34 @@
-from fastapi import FastAPI
-import asyncio
+from fastapi import FastAPI, Query
+from dataclasses import asdict
 
+from data_fetcher import fetch_multiple_pairs
 from signal_engine import scan_pairs
 from config import ALL_PAIRS, ACCOUNT_BALANCE
-from data_fetcher import fetch_all_pairs_data  # adjust import to match your actual data-fetching module/function name
 
 app = FastAPI()
+
+# Kept in sync with handlers.py — signals below this confidence aren't
+# considered "shown" quality. Update both places if you change this.
+MIN_CONFIDENCE_TO_SHOW = 60
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/signals/latest")
-async def latest_signals():
-    data_map = await fetch_all_pairs_data(ALL_PAIRS)
-    signals = await scan_pairs(data_map, ACCOUNT_BALANCE)
+async def latest_signals(balance: float = Query(default=None)):
+    bal = balance or ACCOUNT_BALANCE
+
+    data_map = await fetch_multiple_pairs(ALL_PAIRS)
+    if not data_map:
+        return {"count": 0, "signals": [], "error": "Could not fetch market data"}
+
+    signals = await scan_pairs(data_map, bal)
+    signals = [s for s in signals if s.confidence >= MIN_CONFIDENCE_TO_SHOW]
+
     return {
         "count": len(signals),
-        "signals": [s.__dict__ for s in signals],
+        "signals": [asdict(s) for s in signals],
     }
