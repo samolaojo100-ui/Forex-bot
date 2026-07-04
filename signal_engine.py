@@ -3,12 +3,16 @@ import numpy as np
 import logging
 from dataclasses import dataclass, field
 from indicators import compute_indicators, support_resistance, detect_candle_pattern
-from config import RISK_PERCENT, CRYPTO_PAIRS, DEFAULT_RR_RATIO
+from config import (
+    RISK_PERCENT, CRYPTO_PAIRS, DEFAULT_RR_RATIO,
+    CONFIDENCE_THRESHOLD, MIN_CONFLUENCE, REQUIRE_MTF_ALIGNED,
+)
 from session_manager import get_current_session
 
 logger = logging.getLogger(__name__)
 
-GOLD_PAIRS = {"XAU/USD", "XAUUSD"}
+GOLD_PAIRS   = {"XAU/USD", "XAUUSD"}
+SILVER_PAIRS = {"XAG/USD", "XAGUSD"}
 
 
 @dataclass
@@ -67,9 +71,15 @@ def is_crypto(pair: str) -> bool:
 def is_gold(pair: str) -> bool:
     return pair.upper().replace("/", "") in {"XAUUSD"}
 
+def is_silver(pair: str) -> bool:
+    return pair.upper().replace("/", "") in {"XAGUSD"}
+
 def pip_value(pair: str, price: float) -> float:
     if is_crypto(pair): return 1.0
     if is_gold(pair):   return 0.1
+    # NOTE: 0.01 assumed for XAG/USD (silver ~$28-35 range) — verify against
+    # actual TwelveData tick size for XAG/USD before relying on this in live risk calcs.
+    if is_silver(pair): return 0.01
     return 0.01 if "JPY" in pair else 0.0001
 
 def price_to_pips(pair: str, a: float, b: float) -> float:
@@ -81,12 +91,17 @@ def calc_lot(pair: str, sl_pips: float, balance: float, price: float) -> float:
         return round(risk_usd / max(sl_pips, 0.01), 4)
     if is_gold(pair):
         return max(0.01, round(risk_usd / (sl_pips * 1.0), 2))
+    if is_silver(pair):
+        # NOTE: using same $/pip-unit assumption as gold for now — confirm
+        # actual contract sizing for XAG/USD before trusting position sizing.
+        return max(0.01, round(risk_usd / (sl_pips * 1.0), 2))
     pip_usd = 10 if "JPY" not in pair else 9.09
     return max(0.01, round(risk_usd / (sl_pips * pip_usd), 2))
 
 def decimal_places(pair: str, price: float) -> int:
     if is_crypto(pair) and price > 100: return 2
     if is_gold(pair): return 2
+    if is_silver(pair): return 2
     if "JPY" in pair: return 3
     return 5
 
@@ -342,6 +357,7 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     confidence_penalty = 0
     crypto             = is_crypto(pair)
     gold               = is_gold(pair)
+    silver             = is_silver(pair)
 
     try:
         processed = {tf: compute_indicators(df.copy()) for tf, df in tf_data.items()}
@@ -402,7 +418,7 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
                 f"🚫 Daily trend is {daily_bias} — {direction} trades on gold are blocked"
             )
         else:
-            # Forex/Crypto: heavy penalty, warn
+            # Forex/Crypto/Silver: heavy penalty, warn
             warnings.append(
                 f"⚠️ Daily EMA200 bias is {daily_bias} — conflicts with {direction}"
             )
@@ -442,9 +458,17 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
     confidence = max(0, confidence - confidence_penalty)
     confidence = min(confidence, 99)
 
-    # ── Confluence gate ──────────────────────────────────────────────
-    if confluence < 3:
-        no_trade_reasons.append(f"📊 Only {confluence}/8 indicators confirm — need ≥3")
+    # ── Confluence gate (config-driven) ───────────────────────────────
+    if confluence < MIN_CONFLUENCE:
+        no_trade_reasons.append(
+            f"📊 Only {confluence}/8 indicators confirm — need ≥{MIN_CONFLUENCE}"
+        )
+
+    # ── MTF alignment gate (config-driven, NEW) ───────────────────────
+    if REQUIRE_MTF_ALIGNED and not mtf_aligned:
+        no_trade_reasons.append(
+            f"📊 Timeframes not aligned (BUY {tf_buy_votes} vs SELL {tf_sell_votes}) — MTF alignment required"
+        )
 
     # ── S/R check ────────────────────────────────────────────────────
     support, resistance = support_resistance(df_1h)
@@ -466,9 +490,19 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
             warnings.append(f"⚠️ Entry near support ({support:.{dec}f})")
             confidence = max(0, confidence - 5)
 
-    # ── Confidence floor ─────────────────────────────────────────────
+    # ── Confidence floor (absolute safety floor — unchanged) ─────────
     if confidence < 30:
         no_trade_reasons.append(f"📊 Confidence too low ({confidence}%) — need ≥30%")
+
+    # ── Confidence threshold gate (config-driven, NEW) ────────────────
+    # This is the "quality bar" knob from config.py. If bot.py already
+    # compares against CONFIDENCE_THRESHOLD before sending, this makes
+    # the gate redundant-but-harmless (stricter of the two wins). If
+    # bot.py does NOT check it, this is now the single source of truth.
+    if confidence < CONFIDENCE_THRESHOLD:
+        no_trade_reasons.append(
+            f"📊 Confidence below threshold ({confidence}% < {CONFIDENCE_THRESHOLD}%)"
+        )
 
     # ── SL/TP ────────────────────────────────────────────────────────
     atr     = max(float(row["atr"]), close * 0.001)
@@ -520,6 +554,7 @@ async def analyze_pair(pair: str, tf_data: dict, balance: float):
 
     # ── Asset type ────────────────────────────────────────────────────
     if gold:               asset_type = "GOLD 🥇"
+    elif silver:           asset_type = "SILVER 🥈"
     elif is_crypto(pair):  asset_type = "CRYPTO ₿"
     else:                  asset_type = "FOREX 💱"
 
