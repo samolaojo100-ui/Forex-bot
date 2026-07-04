@@ -22,6 +22,7 @@ from user_settings import (
 from config import ALL_PAIRS, CRYPTO_PAIRS, OWNER_USERNAME, OWNER_CHAT_ID
 from news_filter import get_upcoming_events
 from stocks_engine import fetch_stock_pairs, STOCK_PAIRS
+from db import save_signal
 
 logger  = logging.getLogger(__name__)
 ASK_BAL = 1
@@ -29,8 +30,17 @@ ASK_BAL = 1
 MIN_CONFIDENCE_TO_SHOW = 60
 
 
-def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_SHOW) -> list:
-    return [s for s in signals if s.confidence >= min_confidence]
+async def filter_by_confidence(signals: list, min_confidence: int = MIN_CONFIDENCE_TO_SHOW) -> list:
+    """
+    Filters signals down to those meeting the confidence bar, AND saves
+    every qualifying signal to the database — this is the single choke
+    point used by /signal, /crypto, and /stocks, so all three log
+    automatically without needing separate save calls in each command.
+    """
+    qualifying = [s for s in signals if s.confidence >= min_confidence]
+    for s in qualifying:
+        await save_signal(s)
+    return qualifying
 
 
 # ── ACCESS CONTROL ────────────────────────────────────────────────────
@@ -139,7 +149,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         signals = await scan_pairs(data_map, balance)
-        signals = filter_by_confidence(signals)
+        signals = await filter_by_confidence(signals)
 
         if not signals:
             await msg.edit_text(format_no_signal(), parse_mode=ParseMode.MARKDOWN)
@@ -197,7 +207,7 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         signals = await force_scan_pairs(data_map, balance)
-        signals = filter_by_confidence(signals)
+        signals = await filter_by_confidence(signals)
 
         if not signals:
             await msg.edit_text(format_no_signal(), parse_mode=ParseMode.MARKDOWN)
@@ -268,7 +278,7 @@ async def stocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         signals = await scan_pairs(data_map, balance)
-        signals = filter_by_confidence(signals)
+        signals = await filter_by_confidence(signals)
 
         if not signals:
             await msg.edit_text(
@@ -560,19 +570,4 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_authorized(update):
-        return
-
-    chat_id      = update.effective_chat.id
-    balance      = get_balance(chat_id)
-    session_name, is_active = get_current_session()
-    bal_text     = f"${balance:,.2f}" if balance else "Not set"
-
-    try:
-        upcoming = await get_upcoming_events(hours=24)
-    except Exception:
-        upcoming = []
-
-    await update.message.reply_text(
-        format_status(session_name, is_active, minutes_to_next_scan(), bal_text, upcoming),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+       
