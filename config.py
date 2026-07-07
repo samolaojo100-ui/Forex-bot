@@ -52,8 +52,8 @@ DEFAULT_RR_RATIO = 2.0
 
 # ── Signal Quality ────────────────────────────────────────────────────
 # Raised these since we're only watching 4 pairs now — fewer, higher-quality signals
-CONFIDENCE_THRESHOLD = 78      # was 70 — check bot.py wherever this is used/compared
-MIN_CONFLUENCE       = 5       # was hardcoded to 3 in signal_engine.py — see notes below
+CONFIDENCE_THRESHOLD = 70
+MIN_CONFLUENCE       = 4
 REQUIRE_MTF_ALIGNED  = True    # new flag — see notes below for wiring it in
 
 # ── Scheduler ────────────────────────────────────────────────────────
