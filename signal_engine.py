@@ -127,3 +127,202 @@ def score_indicators(row, direction):
     elif wr>-20:          sell_votes+=1; signals["williams"]="SELL"
     else:                 signals["williams"]="NEUTRAL"
     return buy_votes, sell_votes, signals
+def market_regime(df):
+    row=df.iloc[-1]
+    e9=float(row["ema9"]); e21=float(row["ema21"])
+    e50=float(row["ema50"]); e200=float(row["ema200"])
+    adx=float(row["adx"]); atr=float(row["atr"]); close=float(row["close"])
+    if e9>e21>e50 and close>e200:   trend="Trending Up 📈"
+    elif e9<e21<e50 and close<e200: trend="Trending Down 📉"
+    elif adx>25:                    trend="Trending"
+    else:                           trend="Ranging ↔️"
+    atr_pct=(atr/close)*100 if close>0 else 0
+    if atr_pct>1.0:    volatility="High ⚡"
+    elif atr_pct>0.3:  volatility="Normal"
+    else:              volatility="Low 😴"
+    return trend, volatility
+
+def get_daily_bias(df_daily):
+    if df_daily is None or len(df_daily)<2: return "NEUTRAL"
+    row=df_daily.iloc[-1]
+    close=float(row["close"]); e50=float(row["ema50"]); e200=float(row["ema200"])
+    if close>e200 and e50>e200: return "BUY"
+    elif close<e200 and e50<e200: return "SELL"
+    return "NEUTRAL"
+
+async def _score_news_sentiment(pair):
+    try:
+        from news_filter import get_upcoming_events
+        events=await get_upcoming_events(hours=12)
+        bkw=["beat","better","growth","strong","rise","gain","surplus","positive","above forecast"]
+        skw=["miss","weak","fall","drop","below","cut","deficit","negative","rate hike","hike"]
+        b=0; s=0; currencies=pair.replace("/","").upper()
+        for event in events:
+            name=event.get("event","").lower(); currency=event.get("currency","").upper()
+            if currency and currency not in currencies: continue
+            for kw in bkw:
+                if kw in name: b+=1; break
+            for kw in skw:
+                if kw in name: s+=1; break
+        if b==0 and s==0: label="NEUTRAL"
+        elif b>s*1.5:     label="BULLISH"
+        elif s>b*1.5:     label="BEARISH"
+        else:             label="MIXED"
+        return b, s, label
+    except Exception:
+        return 0, 0, "NEUTRAL"
+
+def _check_tp_reachable(direction, entry, tp1, support, resistance, atr, pair):
+    if direction=="BUY":
+        tp_distance=tp1-entry
+        if resistance>entry and resistance<tp1:
+            if resistance-entry < tp_distance*0.4:
+                return False, f"Resistance at {resistance:.{decimal_places(pair,entry)}f} blocks TP1"
+    else:
+        tp_distance=entry-tp1
+        if support<entry and support>tp1:
+            if entry-support < tp_distance*0.4:
+                return False, f"Support at {support:.{decimal_places(pair,entry)}f} blocks TP1"
+    return True, ""
+
+TF_LABELS={"15min":"15M","1h":"1H","4h":"4H","1day":"D1"}
+
+def build_tf_breakdown(processed, final_direction):
+    breakdown={}
+    for tf in ["15min","1h","4h","1day"]:
+        if tf not in processed: continue
+        df=processed[tf]; row=df.iloc[-1]
+        bv,sv,_=score_indicators(row,"BUY")
+        tf_dir="BUY" if bv>=sv else "SELL"
+        votes=bv if tf_dir=="BUY" else sv
+        label=TF_LABELS.get(tf,tf.upper())
+        breakdown[label]={"direction":tf_dir,"votes":f"{votes}/8",
+            "rsi":round(float(row["rsi"]),1),"adx":round(float(row["adx"]),1),
+            "agree":tf_dir==final_direction}
+    return breakdown
+
+async def analyze_pair(pair, tf_data, balance):
+    from news_filter import check_news_block
+    no_trade_reasons=[]; warnings=[]; confidence_penalty=0
+    crypto=is_crypto(pair); gold=is_gold(pair)
+    try:
+        processed={tf:compute_indicators(df.copy()) for tf,df in tf_data.items()}
+    except Exception as e:
+        logger.warning(f"{pair} indicators error: {e}"); return None
+    news_blocked,news_reason=await check_news_block(pair)
+    if news_blocked and not crypto: no_trade_reasons.append(news_reason)
+    elif news_blocked and crypto:   warnings.append(f"📰 News caution: {news_reason}"); confidence_penalty+=5
+    news_bullish,news_bearish,news_sentiment=await _score_news_sentiment(pair)
+    if "1h" in processed:   df_1h=processed["1h"]
+    elif "4h" in processed: df_1h=processed["4h"]
+    else:                   df_1h=list(processed.values())[-1]
+    row=df_1h.iloc[-1]; close=float(row["close"]); dec=decimal_places(pair,close)
+    tf_buy_votes=0; tf_sell_votes=0
+    for tf,df in processed.items():
+        if tf=="1day": continue
+        r=df.iloc[-1]; bv,sv,_=score_indicators(r,"BUY")
+        if bv>sv:   tf_buy_votes+=1
+        elif sv>bv: tf_sell_votes+=1
+    total_tfs=max(len(processed)-1,1)
+    if tf_buy_votes==tf_sell_votes:
+        bv1h,sv1h,_=score_indicators(row,"BUY")
+        direction="BUY" if bv1h>=sv1h else "SELL"
+    else:
+        direction="BUY" if tf_buy_votes>tf_sell_votes else "SELL"
+    mtf_aligned=abs(tf_buy_votes-tf_sell_votes)>=2
+    tf_breakdown=build_tf_breakdown(processed,direction)
+    df_daily=processed.get("1day")
+    daily_bias=get_daily_bias(df_daily)
+    if daily_bias!="NEUTRAL" and daily_bias!=direction:
+        if gold: no_trade_reasons.append(f"🚫 Daily trend is {daily_bias} — {direction} on gold blocked")
+        else:    warnings.append(f"⚠️ Daily EMA200 bias is {daily_bias} — conflicts with {direction}"); confidence_penalty+=20
+    if news_sentiment=="BEARISH" and direction=="BUY":
+        warnings.append("⚠️ News sentiment bearish — conflicts with BUY"); confidence_penalty+=8
+    elif news_sentiment=="BULLISH" and direction=="SELL":
+        warnings.append("⚠️ News sentiment bullish — conflicts with SELL"); confidence_penalty+=8
+    elif news_sentiment=="MIXED":
+        warnings.append("⚠️ Mixed news sentiment — caution"); confidence_penalty+=4
+    buy_votes,sell_votes,ind_signals=score_indicators(row,direction)
+    confluence=buy_votes if direction=="BUY" else sell_votes
+    tf_agree=tf_buy_votes if direction=="BUY" else tf_sell_votes
+    confidence=int(((confluence/8)*0.5+(tf_agree/total_tfs)*0.5)*100)
+    confidence=max(0,confidence-confidence_penalty); confidence=min(confidence,99)
+    if confluence<MIN_CONFLUENCE:
+        no_trade_reasons.append(f"📊 Only {confluence}/8 indicators confirm — need ≥{MIN_CONFLUENCE}")
+    if REQUIRE_MTF_ALIGNED and not mtf_aligned:
+        no_trade_reasons.append(f"📊 Timeframes not aligned (BUY {tf_buy_votes} vs SELL {tf_sell_votes}) — MTF alignment required")
+    support,resistance=support_resistance(df_1h)
+    support=float(support); resistance=float(resistance)
+    if direction=="BUY":
+        dist_pct=(resistance-close)/close if close>0 else 1
+        if dist_pct<0.001: no_trade_reasons.append(f"⚠️ Entry on resistance ({resistance:.{dec}f})")
+        elif dist_pct<0.003: warnings.append(f"⚠️ Entry near resistance ({resistance:.{dec}f})"); confidence=max(0,confidence-5)
+    else:
+        dist_pct=(close-support)/close if close>0 else 1
+        if dist_pct<0.001: no_trade_reasons.append(f"⚠️ Entry on support ({support:.{dec}f})")
+        elif dist_pct<0.003: warnings.append(f"⚠️ Entry near support ({support:.{dec}f})"); confidence=max(0,confidence-5)
+    if confidence<30: no_trade_reasons.append(f"📊 Confidence too low ({confidence}%) — need ≥30%")
+    if confidence<CONFIDENCE_THRESHOLD: no_trade_reasons.append(f"📊 Confidence below threshold ({confidence}% < {CONFIDENCE_THRESHOLD}%)")
+    atr=max(float(row["atr"]),close*0.001); sl_dist=atr*1.5
+    if direction=="BUY":
+        sl=round(close-sl_dist,dec); partial_tp=round(close+sl_dist*0.5,dec)
+        tp1=round(close+sl_dist*1.0,dec); tp2=round(close+sl_dist*2.0,dec)
+        tp3=round(close+sl_dist*3.0,dec); invalidation=round(sl-sl_dist*0.5,dec)
+    else:
+        sl=round(close+sl_dist,dec); partial_tp=round(close-sl_dist*0.5,dec)
+        tp1=round(close-sl_dist*1.0,dec); tp2=round(close-sl_dist*2.0,dec)
+        tp3=round(close-sl_dist*3.0,dec); invalidation=round(sl+sl_dist*0.5,dec)
+    sl_pips=price_to_pips(pair,close,sl); tp1_pips=price_to_pips(pair,close,tp1)
+    tp2_pips=price_to_pips(pair,close,tp2); tp3_pips=price_to_pips(pair,close,tp3)
+    rr=round(tp2_pips/sl_pips,1) if sl_pips>0 else 0
+    lot=calc_lot(pair,sl_pips,balance,close); risk_usd=round(balance*RISK_PERCENT/100,2)
+    tp_reachable,tp_reach_reason=_check_tp_reachable(direction,close,tp1,support,resistance,atr,pair)
+    if not tp_reachable:
+        warnings.append(f"🎯 {tp_reach_reason}"); confidence=max(0,confidence-8); tp_reachable=True
+    trend,volatility=market_regime(df_1h)
+    session_name,is_active=get_current_session()
+    if "Overlap" in session_name:  session_quality="High ✅"
+    elif is_active:                session_quality="Medium"
+    else:                          session_quality="Low"
+    candle=detect_candle_pattern(df_1h)
+    if is_gold(pair):     asset_type="GOLD 🥇"
+    elif is_silver(pair): asset_type="SILVER 🥈"
+    elif is_crypto(pair): asset_type="CRYPTO ₿"
+    else:                 asset_type="FOREX 💱"
+    return Signal(
+        pair=pair,symbol=pair,direction=direction,confidence=confidence,
+        confluence=confluence,mtf_aligned=mtf_aligned,entry=round(close,dec),
+        sl=sl,tp1=tp1,tp2=tp2,tp3=tp3,partial_tp=partial_tp,invalidation=invalidation,
+        sl_pips=sl_pips,tp1_pips=tp1_pips,tp2_pips=tp2_pips,tp3_pips=tp3_pips,
+        rr_ratio=rr,lot_size=lot,risk_usd=risk_usd,asset_type=asset_type,
+        trend=trend,volatility=volatility,session=session_name,session_quality=session_quality,
+        adx=round(float(row["adx"]),1),rsi=round(float(row["rsi"]),2),
+        macd_signal=ind_signals.get("macd","NEUTRAL"),stoch_signal=ind_signals.get("stoch","NEUTRAL"),
+        cci_signal=ind_signals.get("cci","NEUTRAL"),williams_signal=ind_signals.get("williams","NEUTRAL"),
+        bb_signal=ind_signals.get("bb","NEUTRAL"),candle_pattern=candle,tf_breakdown=tf_breakdown,
+        news_blocked=news_blocked,news_reason=news_reason,news_bullish=news_bullish,
+        news_bearish=news_bearish,news_sentiment=news_sentiment,tp_reachable=tp_reachable,
+        tp_reach_reason=tp_reach_reason,no_trade=len(no_trade_reasons)>0,
+        no_trade_reasons=no_trade_reasons,warnings=warnings,
+    )
+
+async def scan_pairs(data_map, balance):
+    signals=[]
+    for pair,tfs in data_map.items():
+        try:
+            sig=await analyze_pair(pair,tfs,balance)
+            if sig and not sig.no_trade: signals.append(sig)
+        except Exception as e: logger.warning(f"{pair} error: {e}")
+    signals.sort(key=lambda s:s.confidence,reverse=True)
+    return signals
+
+async def force_scan_pairs(data_map, balance):
+    signals=[]
+    for pair,tfs in data_map.items():
+        try:
+            sig=await analyze_pair(pair,tfs,balance)
+            if sig:
+                sig.no_trade=False; sig.no_trade_reasons=[]; signals.append(sig)
+        except Exception as e: logger.warning(f"{pair} error: {e}")
+    signals.sort(key=lambda s:s.confidence,reverse=True)
+    return signals
