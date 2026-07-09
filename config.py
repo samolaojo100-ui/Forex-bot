@@ -55,8 +55,8 @@ DEFAULT_RR_RATIO = 2.0
 # ── Signal Quality ────────────────────────────────────────────────────
 # Raised these since we're only watching 4 pairs now — fewer, higher-quality signals
 CONFIDENCE_THRESHOLD = 70
-MIN_CONFLUENCE       = 4
-REQUIRE_MTF_ALIGNED  = True    # new flag — see notes below for wiring it in
+MIN_CONFLUENCE      = 3
+REQUIRE_MTF_ALIGNED = False    # new flag — see notes below for wiring it in
 
 # ── Scheduler ────────────────────────────────────────────────────────
 AUTO_SIGNAL_INTERVAL = 30  # minutes
