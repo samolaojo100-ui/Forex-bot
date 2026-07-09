@@ -31,9 +31,11 @@ SESSION_OVERLAPS = [
 
 # ── 4 Core Pairs (Gold, Silver, EUR/USD, BTC) ─────────────────────────
 FOREX_PAIRS = [
-    "EUR/USD",   # Most liquid forex pair
-    "XAU/USD",   # Gold — 24/7
-    "XAG/USD",   # Silver — 24/7
+    "EUR/USD",
+    "GBP/USD", 
+    "USD/JPY",
+    "XAU/USD",
+    "XAG/USD",  # Silver
 ]
 
 CRYPTO_PAIRS = [
